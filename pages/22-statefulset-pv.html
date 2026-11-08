@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StatefulSets &amp; Persistent Volumes · Kubernetes Simplified</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/site.js"></script>
+<style>
+  .sim-box { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin: 10px 0; background: var(--surface-2); }
+  .sim-box h4 { margin: 0 0 6px; font-size: 15px; }
+  .sim-box select { width: 100%; margin-bottom: 6px; }
+  .trace { list-style: none; padding: 0; margin: 0; }
+  .trace li { margin: 3px 0; }
+  .trace .y { color: var(--green); font-weight: 700; }
+  .trace .n { color: var(--red); font-weight: 700; }
+</style>
+</head>
+<body data-page="22">
+<main class="wrap">
+  <header class="page-head">
+    <h1>StatefulSets &amp; Persistent Volumes</h1>
+    <p class="lead">Databases and other apps that must remember things need storage that outlives a Pod. You will learn how Kubernetes provides it (PV, PVC, StorageClass), how a StatefulSet differs from a Deployment, and how to fix the classic "works on EKS, Pending everywhere else" bug.</p>
+  </header>
+
+  <div class="xref-box"><div>Stateless apps are handled by Deployments, covered in <a href="05-deployments-replicasets.html">Lesson 5</a>. Pods themselves are in <a href="04-pods.html">Lesson 4</a>.</div></div>
+
+  <h2>A real-world problem</h2>
+  <p>A developer files a ticket: "My StatefulSet works on our AWS EKS cluster, but on AKS, GKE and minikube the Pods never start." You get the same YAML. Where do you look? To answer that you need the storage building blocks first.</p>
+
+  <h2>Why storage needs special handling</h2>
+  <p>A container's own filesystem disappears when the container is replaced. That is fine for a web server and a disaster for a database. Kubernetes separates <em>asking for storage</em> from <em>providing storage</em> using three objects:</p>
+  <div class="grid-2">
+    <div class="card"><h3>PersistentVolume (PV)</h3><p>A piece of real storage in the cluster: an AWS EBS disk, an Azure disk, a folder on a node. It exists independently of any Pod.</p></div>
+    <div class="card"><h3>PersistentVolumeClaim (PVC)</h3><p>A Pod's <em>request</em>: "I need 1 GiB, read/write by one node". Kubernetes binds the claim to a matching PV.</p></div>
+    <div class="card"><h3>StorageClass</h3><p>A recipe for creating PVs on demand: which kind of storage and which provisioner. Names like <code>standard</code> or <code>gp3</code> are classes.</p></div>
+    <div class="card"><h3>Provisioner / CSI driver</h3><p>The plugin that talks to the storage system and creates the PV when a PVC asks for it.</p></div>
+  </div>
+  <div class="callout analogy"><span class="callout-title">Think of it like…</span>A PVC is an order form ("one 1 GiB disk, fast type, please"). The StorageClass is the catalogue entry that says which supplier fulfils it. The provisioner is the supplier, and the PV is the disk that arrives.</div>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 700 150" role="img" aria-label="Flow: StatefulSet creates a PVC, the PVC names a StorageClass, the StorageClass uses a provisioner, which creates the PV.">
+      <defs><marker id="arr22" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" style="fill:var(--text-2)"/></marker></defs>
+      <rect class="s-blue" x="8" y="45" width="130" height="60" rx="8"/>
+      <text class="s-text-b" x="73" y="80" text-anchor="middle">StatefulSet</text>
+      <rect class="s-purple" x="165" y="45" width="110" height="60" rx="8"/>
+      <text class="s-text-b" x="220" y="80" text-anchor="middle">PVC</text>
+      <rect class="s-orange-soft" x="300" y="45" width="120" height="60" rx="8"/>
+      <text class="s-text-b" x="360" y="80" text-anchor="middle">StorageClass</text>
+      <rect class="s-box2" x="445" y="45" width="110" height="60" rx="8"/>
+      <text class="s-text-b" x="500" y="80" text-anchor="middle">Provisioner</text>
+      <rect class="s-green" x="580" y="45" width="110" height="60" rx="8"/>
+      <text class="s-text-b" x="635" y="80" text-anchor="middle">PV (disk)</text>
+      <path class="s-line" d="M138 75 H163" marker-end="url(#arr22)"/>
+      <path class="s-line" d="M275 75 H298" marker-end="url(#arr22)"/>
+      <path class="s-line" d="M420 75 H443" marker-end="url(#arr22)"/>
+      <path class="s-line" d="M555 75 H578" marker-end="url(#arr22)"/>
+      <text class="s-text-s" x="220" y="125" text-anchor="middle">asks for 1Gi</text>
+      <text class="s-text-s" x="360" y="125" text-anchor="middle">picked by name</text>
+    </svg>
+    <figcaption>Dynamic provisioning: a claim triggers the creation of a volume.</figcaption>
+  </figure>
+
+  <h2>StatefulSet vs Deployment</h2>
+  <p>A <strong>StatefulSet</strong> runs Pods that need a stable identity. Compared to a Deployment:</p>
+  <ul>
+    <li><strong>Stable names:</strong> Pods are called <code>web-0</code>, <code>web-1</code>, <code>web-2</code>, not random hash names. Replace <code>web-1</code> and the new one is again <code>web-1</code>.</li>
+    <li><strong>Own storage per Pod:</strong> a <code>volumeClaimTemplates</code> section creates a separate PVC for each Pod (<code>data-web-0</code>, <code>data-web-1</code>...). Each Pod keeps its disk when it restarts.</li>
+    <li><strong>Ordered start:</strong> <code>web-1</code> is only created after <code>web-0</code> is Running and ready, then <code>web-2</code> after <code>web-1</code>. Think of a database: you want the primary up before the replicas that copy from it.</li>
+  </ul>
+  <p>Stable DNS names for each Pod come from a headless Service, see <a href="29-headless-service.html">Lesson 29</a>.</p>
+
+<pre><code>apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: web
+spec:
+  serviceName: web
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.25
+        volumeMounts:
+        - name: data
+          mountPath: /usr/share/nginx/html
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: ebs        # the cause of our bug
+      resources:
+        requests:
+          storage: 1Gi</code></pre>
+
+  <h2>Debugging the ticket</h2>
+  <p>Apply the file on minikube and look:</p>
+<pre><code>kubectl apply -f statefulset.yaml
+kubectl get statefulset      # READY 0/3
+kubectl get pods             # only web-0, and it is Pending</code></pre>
+  <p>Only one Pod appears because of the ordered start. It is not a separate bug. Now ask Kubernetes why:</p>
+<pre><code>kubectl describe pod web-0
+# Warning  FailedScheduling  ...  pod has unbound immediate PersistentVolumeClaims</code></pre>
+  <p>"Unbound" means the Pod's claim never got a volume. Follow the chain from the diagram:</p>
+<pre><code>kubectl get pvc              # data-web-0   Pending
+kubectl describe pvc data-web-0   # storageclass "ebs" not found
+kubectl get storageclass     # minikube has only: standard</code></pre>
+  <p><strong>Root cause:</strong> the YAML asks for a StorageClass named <code>ebs</code>. EKS had a class by that name backed by AWS EBS, but minikube only has <code>standard</code>. No class, no provisioner, no volume.</p>
+  <h3>The fix</h3>
+  <ol class="steps">
+    <li>Change <code>storageClassName</code> to a class that exists (<code>standard</code> on minikube). Better still, <strong>leave the field out</strong> and the cluster's default class is used, which makes the same YAML portable.</li>
+    <li>Delete the old StatefulSet: <code>kubectl delete -f statefulset.yaml</code>.</li>
+    <li><strong>Delete the leftover PVCs</strong> too: <code>kubectl delete pvc -l app=web</code> (or by name). Deleting a StatefulSet does <em>not</em> delete its PVCs or volumes, on purpose, to protect your data. The old Pending claim would otherwise stay stuck with the wrong class.</li>
+    <li>Apply again and watch <code>kubectl get pods -w</code>. <code>web-0</code> goes Running, then <code>web-1</code> appears, then <code>web-2</code>.</li>
+  </ol>
+  <div class="callout warn"><span class="callout-title">Watch out</span>Because PVCs survive deletion, think before removing them in production. They hold the data. The "delete PVC" step above is safe only here because the claims never bound to anything.</div>
+
+  <div class="demo" id="demo-sts">
+    <div class="demo-head">Try it: deploy the StatefulSet</div>
+    <div class="demo-body">
+      <p>Pick a cluster and the <code>storageClassName</code> in the YAML, then apply.</p>
+      <div class="sim-box">
+        <h4>Cluster</h4>
+        <select id="st-cluster" aria-label="Cluster">
+          <option value="eks">EKS (classes: ebs, efs)</option>
+          <option value="mini">minikube (classes: standard)</option>
+        </select>
+        <h4>storageClassName in YAML</h4>
+        <select id="st-class" aria-label="Storage class name">
+          <option value="ebs">ebs</option>
+          <option value="standard">standard</option>
+          <option value="">(omitted: use cluster default)</option>
+        </select>
+      </div>
+      <div class="row"><button class="btn primary" id="st-go">kubectl apply</button></div>
+      <div class="output" id="st-out">Press <b>kubectl apply</b>.</div>
+    </div>
+  </div>
+
+  <h2>External storage and CSI drivers</h2>
+  <p>Clouds ship drivers for their own disks. What if you want storage from a vendor the cluster does not know, such as NetApp? The vendor supplies a <strong>CSI driver</strong> (Container Storage Interface), usually installed with a Helm chart or operator. Once installed, you create a StorageClass that points to it, and PVCs using that class get volumes from the vendor. Everything else in the chain stays the same.</p>
+
+  <h2>Storage troubleshooting checklist</h2>
+  <ul>
+    <li>Pod Pending with "unbound PVC" → <code>kubectl describe pvc</code>.</li>
+    <li>Does the named class exist? <code>kubectl get storageclass</code> (look for <code>(default)</code>).</li>
+    <li>Is the provisioner or CSI driver running? <code>kubectl get pods -A | grep -i provisioner</code>.</li>
+    <li>Old PVCs left over from a previous attempt? Check <code>kubectl get pvc,pv</code>.</li>
+  </ul>
+
+  <h2>Check yourself</h2>
+  <div class="quiz" data-answer="2">
+    <div class="q">A 3-replica StatefulSet shows only <code>web-0</code>, which is Pending. Why are the other two missing?</div>
+    <div class="opts"><button>They crashed and were deleted</button><button>The cluster is out of nodes</button><button>StatefulSets create Pods in order, and web-0 is not ready yet</button></div>
+    <div class="explain">Ordered startup means web-1 is created only after web-0 is Running and ready.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">You delete a StatefulSet. What happens to its PersistentVolumeClaims?</div>
+    <div class="opts"><button>They remain until you delete them yourself</button><button>They are deleted immediately</button><button>They turn into Deployments</button></div>
+    <div class="explain">Kubernetes keeps PVCs (and the data) so deleting a StatefulSet does not destroy your database.</div>
+  </div>
+
+  <section class="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li>A <strong>PVC</strong> requests storage; a <strong>StorageClass</strong> and provisioner create the <strong>PV</strong> that satisfies it.</li>
+      <li>A <strong>StatefulSet</strong> gives Pods stable names, one PVC each, and ordered startup.</li>
+      <li>"Works on EKS, not elsewhere" often means a missing <strong>StorageClass</strong>. Omit the name to use the default.</li>
+      <li>Deleting a StatefulSet leaves PVCs behind; clean them up deliberately.</li>
+      <li>Third-party storage needs a <strong>CSI driver</strong> installed first.</li>
+    </ul>
+  </section>
+</main>
+<script>
+(function () {
+  var CLASSES = { eks: { list: ["ebs", "efs"], def: "ebs" }, mini: { list: ["standard"], def: "standard" } };
+  var $ = function (id) { return document.getElementById(id); };
+  function line(ok, txt) { return '<li><span class="' + (ok ? "y" : "n") + '">' + (ok ? "✔" : "✘") + "</span> " + txt + "</li>"; }
+  $("st-go").addEventListener("click", function () {
+    var c = CLASSES[$("st-cluster").value], want = $("st-class").value, steps = [];
+    var cls = want === "" ? c.def : want;
+    steps.push(line(true, "StatefulSet <b>web</b> created, 3 replicas requested"));
+    steps.push(line(true, "PVC <b>data-web-0</b> created asking for 1Gi, class <code>" + (want === "" ? "(default → " + c.def + ")" : want) + "</code>"));
+    var ok = c.list.indexOf(cls) >= 0;
+    var out = $("st-out");
+    if (!ok) {
+      steps.push(line(false, "StorageClass <code>" + cls + "</code> not found on this cluster (available: " + c.list.join(", ") + ")"));
+      steps.push(line(false, "PVC stays <b>Pending</b>; <b>web-0</b> Pending with \"unbound immediate PersistentVolumeClaims\""));
+      steps.push(line(false, "web-1 and web-2 are never created (ordered start)"));
+      out.className = "output bad";
+      out.innerHTML = '<ul class="trace">' + steps.join("") + "</ul><p style=\"margin:8px 0 0\"><b>Fix:</b> use a class from <code>kubectl get storageclass</code> or omit the field, then delete the stuck PVC and re-apply.</p>";
+      return;
+    }
+    steps.push(line(true, "Provisioner creates a PV; PVC <b>Bound</b>"));
+    steps.push(line(true, "web-0 Running → web-1 created → Running → web-2 created → Running"));
+    out.className = "output ok";
+    out.innerHTML = '<ul class="trace">' + steps.join("") + "</ul><p style=\"margin:8px 0 0\"><b>3/3 Pods running.</b></p>";
+  });
+})();
+</script>
+</body>
+</html>
