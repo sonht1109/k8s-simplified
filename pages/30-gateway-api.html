@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gateway API · Kubernetes Simplified</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/site.js"></script>
+</head>
+<body data-page="30">
+<main class="wrap">
+  <header class="page-head">
+    <h1>Gateway API</h1>
+    <p class="lead">Gateway API is the modern way to bring outside traffic into a cluster. It fixes the two big problems of Ingress: very limited features and no clear split between platform and app teams. You'll learn its three resources and try weighted routing.</p>
+  </header>
+
+  <div class="xref-box"><div>This lesson assumes you know what <a href="09-ingress-tls.html">Ingress and ingress controllers</a> are, and what a <a href="06-services-intro.html">Service</a> is. Gateway API resources are <a href="12-crds-custom-controllers.html">CRDs</a>, which is why they can be installed and updated separately from Kubernetes.</div></div>
+
+  <h2>The story so far: north-south traffic</h2>
+  <p>Traffic inside the cluster (<strong>east-west</strong>, service to service) is easy because Kubernetes has its own network. Traffic from the outside world into the cluster (<strong>north-south</strong>) is harder. Kubernetes does not have a built-in load balancer.</p>
+  <p>Its answer was <strong>Ingress</strong>. Load-balancer makers (NGINX, HAProxy, cloud providers) write an <em>ingress controller</em>. The cluster admin installs it once. App teams then create <code>Ingress</code> resources and the controller builds the load balancer. It worked, but years of use revealed two drawbacks.</p>
+
+  <h2>Drawback 1: Ingress can say very little</h2>
+  <p>An Ingress can express only: "which Service" and "on which host or path". Real production needs more: rate limiting, a web application firewall, redirects, URL rewrites, canary (weighted) traffic, and so on. None of these exist in the Ingress spec.</p>
+  <p>Controllers worked around it with <strong>annotations</strong>. That created new pain:</p>
+  <ul>
+    <li>Huge numbers of annotations (30 to 40 for one controller).</li>
+    <li>Some are JSON strings inside YAML, such as weighted routing for AWS ALB. Hard to read and easy to get wrong.</li>
+    <li>Annotations differ between NGINX, ALB and others, so switching controllers means relearning and rewriting.</li>
+  </ul>
+
+  <h2>Drawback 2: no separation of roles</h2>
+  <p>In many companies the <strong>platform team</strong> owns the controller and which class to use, while <strong>app teams</strong> own routing for their service. With Ingress, both edit the same object, so an app developer can accidentally change what the platform team set up.</p>
+  <p>The community asked to split Ingress into parts. Changing Ingress itself would break everyone, so Kubernetes created something new.</p>
+
+  <h2>Gateway API: three resources, three jobs</h2>
+  <p>Gateway API solves the <em>same</em> problem as Ingress (north-south traffic), but split into three resources:</p>
+  <div class="table-wrap"><table>
+    <tr><th>Resource</th><th>What it says</th><th>Who owns it</th></tr>
+    <tr><td><strong>GatewayClass</strong></td><td>Which controller implementation to use (like an IngressClass)</td><td>Platform / cluster admin</td></tr>
+    <tr><td><strong>Gateway</strong></td><td>The entry point: which class, and which ports and protocols to listen on</td><td>Platform or app team (via RBAC)</td></tr>
+    <tr><td><strong>HTTPRoute</strong></td><td>Routing rules: hosts, paths, backend Services, weights, filters</td><td>App / DevOps team</td></tr>
+  </table></div>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 700 270" role="img" aria-label="A user sends traffic to the load balancer created from a Gateway, which uses a GatewayClass and is configured by an HTTPRoute that points to Services and Pods. Platform team owns GatewayClass; app team owns Gateway and HTTPRoute.">
+      <defs><marker id="arr30" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" style="fill:var(--text-2)"/></marker></defs>
+      <rect class="s-box2" x="10" y="100" width="80" height="50" rx="8"/>
+      <text class="s-text-b" x="50" y="130" text-anchor="middle">User</text>
+      <rect class="s-purple" x="140" y="20" width="170" height="60" rx="8"/>
+      <text class="s-text-b" x="225" y="46" text-anchor="middle">GatewayClass</text>
+      <text class="s-text-s" x="225" y="66" text-anchor="middle">platform team</text>
+      <rect class="s-blue" x="140" y="100" width="170" height="60" rx="8"/>
+      <text class="s-text-b" x="225" y="126" text-anchor="middle">Gateway</text>
+      <text class="s-text-s" x="225" y="146" text-anchor="middle">listens on port 80</text>
+      <rect class="s-green" x="360" y="100" width="150" height="60" rx="8"/>
+      <text class="s-text-b" x="435" y="126" text-anchor="middle">HTTPRoute</text>
+      <text class="s-text-s" x="435" y="146" text-anchor="middle">app team</text>
+      <rect class="s-orange-soft" x="560" y="60" width="130" height="50" rx="8"/>
+      <text class="s-text-b" x="625" y="90" text-anchor="middle">Service v1</text>
+      <rect class="s-orange-soft" x="560" y="150" width="130" height="50" rx="8"/>
+      <text class="s-text-b" x="625" y="180" text-anchor="middle">Service v2</text>
+      <path class="s-line" d="M90 125 H138" marker-end="url(#arr30)"/>
+      <path class="s-line" d="M225 80 V98" marker-end="url(#arr30)"/>
+      <path class="s-line" d="M310 130 H358" marker-end="url(#arr30)"/>
+      <path class="s-line" d="M510 120 L558 90" marker-end="url(#arr30)"/>
+      <path class="s-line" d="M510 140 L558 170" marker-end="url(#arr30)"/>
+      <text class="s-text-s" x="140" y="230">Gateway names its class. HTTPRoute attaches to the Gateway (parentRefs).</text>
+    </svg>
+    <figcaption>Each resource has its own owner, so teams can't step on each other.</figcaption>
+  </figure>
+
+  <ul>
+    <li><strong>Problem 1 solved:</strong> HTTPRoute has real fields for weights, redirects, header matches and rewrites. No more giant annotations.</li>
+    <li><strong>Problem 2 solved:</strong> three separate resources means you can give each team RBAC permission on only the ones it owns (see <a href="11-rbac.html">Lesson 11</a>).</li>
+    <li>It's also <strong>portable</strong>: the same resources work across controllers (Envoy Gateway, NGINX Gateway Fabric, Traefik, cloud implementations).</li>
+  </ul>
+  <div class="callout note"><span class="callout-title">Note</span>Rate limiting, WAF and similar features are still provided by the controller, often through extra policy resources it defines. Gateway API gives a standard place and shape for the common ones (redirects, rewrites, weights, header rules) instead of annotation strings.</div>
+
+  <h2>Hands-on: from zero to a routed app</h2>
+  <p>This demo uses a local cluster (see <a href="26-kind.html">kind</a>) and Envoy Gateway, a beginner-friendly controller.</p>
+
+  <h3>Step 1: platform engineer installs the controller</h3>
+  <p>The Helm chart installs the Gateway API CRDs and the controller in one go (see <a href="27-helm.html">Lesson 27</a>). Check the Envoy Gateway docs for the current version number.</p>
+<pre><code>kind create cluster --name gw-demo
+
+helm install eg oci://docker.io/envoyproxy/gateway-helm \
+  --version &lt;version&gt; -n envoy-gateway-system --create-namespace
+
+kubectl get pods -n envoy-gateway-system
+kubectl get crds | grep gateway</code></pre>
+  <p>You should see <code>gatewayclasses</code>, <code>gateways</code> and <code>httproutes</code> CRDs. The controller now waits for Gateway and HTTPRoute objects, just as an ingress controller waits for Ingress objects.</p>
+
+  <h3>Step 2: deploy an app with a ClusterIP Service</h3>
+  <p>Any app will do. The demo app is a small "echo" server that replies with request details, exposed on port 3000.</p>
+<pre><code>kubectl create deployment backend --image=&lt;your-echo-image&gt;
+kubectl expose deployment backend --port=3000</code></pre>
+
+  <h3>Step 3: GatewayClass (platform)</h3>
+<pre><code>apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: eg
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller</code></pre>
+  <p>This says "anything using class <code>eg</code> is handled by Envoy Gateway". Many installs create it for you.</p>
+
+  <h3>Step 4: Gateway (the entry point)</h3>
+<pre><code>apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: eg
+spec:
+  gatewayClassName: eg
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80</code></pre>
+  <p><code>gatewayClassName</code> tells the Gateway which controller owns it (like <code>ingressClassName</code>). The listener says: listen on HTTP port 80. The controller creates a proxy Pod and a Service for it.</p>
+
+  <h3>Step 5: HTTPRoute (the routing rules)</h3>
+<pre><code>apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: backend
+spec:
+  parentRefs:
+  - name: eg
+  hostnames:
+  - "www.example.com"
+  rules:
+  - backendRefs:
+    - name: backend
+      port: 3000</code></pre>
+  <p><code>parentRefs</code> attaches the route to the Gateway. Requests with host <code>www.example.com</code> go to the <code>backend</code> Service on port 3000.</p>
+
+  <h3>Step 6: test it</h3>
+  <p>A local cluster can't create a cloud load balancer, so tunnel to the proxy's Service with <a href="24-port-forwarding.html">port-forward</a>. Find its name in the controller namespace first.</p>
+<pre><code>kubectl get svc -n envoy-gateway-system
+kubectl port-forward -n envoy-gateway-system svc/&lt;envoy-proxy-service&gt; 9090:80
+
+# in a second terminal
+curl --verbose --header "Host: www.example.com" http://localhost:9090/</code></pre>
+  <p>The reply comes from your backend Pod. The <code>Host</code> header matters: the route only matches that hostname.</p>
+
+  <h2>Two features that used to need annotations</h2>
+  <h3>URL rewrite</h3>
+  <p>Users call <code>/get</code>, but the app now serves <code>/replace</code>. Rewrite it in the route and nobody notices:</p>
+<pre><code>  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /get
+    filters:
+    - type: URLRewrite
+      urlRewrite:
+        path:
+          type: ReplacePrefixMatch
+          replacePrefixMatch: /replace
+    backendRefs:
+    - name: backend
+      port: 3000</code></pre>
+  <h3>Weighted routing (canary)</h3>
+  <p>With Ingress this was a JSON annotation. Now it is one field per backend:</p>
+<pre><code>  rules:
+  - backendRefs:
+    - name: app-v1
+      port: 3000
+      weight: 8
+    - name: app-v2
+      port: 3000
+      weight: 2</code></pre>
+  <p>Weights are relative, so 8 and 2 mean about 80% and 20%. Deployment strategies are explained in <a href="18-deployment-strategies.html">Lesson 18</a>.</p>
+
+  <div class="demo" id="demo-gw">
+    <div class="demo-head">Try it: weighted routing</div>
+    <div class="demo-body">
+      <p>Set the weights of <code>app-v1</code> and <code>app-v2</code>, then send 100 requests through the Gateway.</p>
+      <div class="row">
+        <label>v1 weight <input type="range" id="g-w1" min="0" max="10" value="8"> <b id="g-w1v">8</b></label>
+        <label>v2 weight <input type="range" id="g-w2" min="0" max="10" value="2"> <b id="g-w2v">2</b></label>
+      </div>
+      <div class="row"><button class="btn primary" id="g-go">Send 100 requests</button></div>
+      <div class="output" id="g-out"></div>
+    </div>
+  </div>
+
+  <div class="callout interview"><span class="callout-title">Interview angle</span>"Why Gateway API over Ingress?" Richer routing built into the spec (no annotation sprawl), portable across controllers, and role-oriented design: GatewayClass for platform admins, Gateway and HTTPRoute for app teams.</div>
+
+  <h2>Check yourself</h2>
+  <div class="quiz" data-answer="0">
+    <div class="q">Which resource does an application team normally write to define paths, hosts and backends?</div>
+    <div class="opts"><button>HTTPRoute</button><button>GatewayClass</button><button>IngressClass</button></div>
+    <div class="explain">HTTPRoute holds the routing rules. GatewayClass is chosen by the platform team.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">What was a main complaint about Ingress that Gateway API fixes?</div>
+    <div class="opts"><button>Ingress cannot route HTTP at all</button><button>Ingress only works inside one namespace</button><button>Advanced features needed controller-specific annotations and there was no role separation</button></div>
+    <div class="explain">Ingress spec is small, so features moved into annotations, and one object mixed platform and app concerns.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">How does an HTTPRoute connect to a Gateway?</div>
+    <div class="opts"><button>By the same name automatically</button><button>Through <code>parentRefs</code></button><button>Through a Service annotation</button></div>
+    <div class="explain"><code>parentRefs</code> names the Gateway the route attaches to.</div>
+  </div>
+
+  <section class="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li>Gateway API solves the same north-south traffic problem as Ingress, with fewer limits.</li>
+      <li>Three resources: GatewayClass (which controller), Gateway (entry point), HTTPRoute (rules).</li>
+      <li>Real fields replace annotation strings: weights, rewrites, redirects, header matching.</li>
+      <li>Role separation: platform owns the class, app teams own routes, enforced with RBAC.</li>
+      <li>Install a controller first; locally, use port-forward to reach the proxy.</li>
+      <li>Resources are CRDs, so they evolve independently of Kubernetes releases.</li>
+    </ul>
+  </section>
+</main>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var a = $("g-w1"), b = $("g-w2"), out = $("g-out");
+  function labels() { $("g-w1v").textContent = a.value; $("g-w2v").textContent = b.value; }
+  function bar(n, label) {
+    return "<div style='margin:4px 0'>" + label + ": <b>" + n + "</b><div style='height:12px;border-radius:6px;background:var(--blue);width:" + n + "%;min-width:2px'></div></div>";
+  }
+  function go() {
+    var w1 = +a.value, w2 = +b.value, c1 = 0, c2 = 0, i;
+    if (w1 + w2 === 0) { out.className = "output bad"; out.textContent = "Both weights are 0: no backend can receive traffic (the Gateway returns an error)."; return; }
+    for (i = 0; i < 100; i++) { if (Math.random() * (w1 + w2) < w1) c1++; else c2++; }
+    out.className = "output ok";
+    out.innerHTML = bar(c1, "app-v1") + bar(c2, "app-v2") + "<span style='color:var(--text-2)'>Expected about " + Math.round(100 * w1 / (w1 + w2)) + "% / " + Math.round(100 * w2 / (w1 + w2)) + "%. Real traffic varies a little.</span>";
+  }
+  a.addEventListener("input", labels); b.addEventListener("input", labels);
+  $("g-go").addEventListener("click", go);
+  labels();
+})();
+</script>
+</body>
+</html>
