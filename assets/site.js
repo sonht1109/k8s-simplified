@@ -35,6 +35,14 @@
   ];
   window.K8S_PAGES = PAGES;
 
+  /* favicon (path relative to this script) */
+  (function () {
+    var sc = document.currentScript, base = "";
+    if (sc && sc.src) base = sc.src.replace(/site\.js(\?.*)?$/, "");
+    var l = document.createElement("link"); l.rel = "icon"; l.type = "image/svg+xml"; l.href = base + "favicon.svg";
+    document.head.appendChild(l);
+  })();
+
   var VISITED_KEY = "k8ss-visited";
   function getVisited() { try { return JSON.parse(localStorage.getItem(VISITED_KEY) || "[]"); } catch (e) { return []; } }
   function markVisited(n) { try { var v = getVisited(); if (v.indexOf(n) < 0) { v.push(n); localStorage.setItem(VISITED_KEY, JSON.stringify(v)); } } catch (e) {} }
@@ -72,7 +80,7 @@
   function footer() {
     return el(
       '<footer class="site-footer">' +
-        '<p><span class="ai-note">🤖 This content is AI-generated</span></p>' +
+        '<p><span class="ai-note">This content is AI-generated</span></p>' +
         '<p>Lessons were written by AI from transcripts of a 30-video YouTube Kubernetes series. They may contain mistakes — always check the official Kubernetes documentation before using anything in production.</p>' +
       '</footer>'
     );
