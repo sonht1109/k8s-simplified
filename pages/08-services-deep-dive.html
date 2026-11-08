@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Services Deep Dive: Hands-On · Kubernetes Simplified</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/site.js"></script>
+<style>
+  .pm-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin: 8px 0; }
+  .pm-grid label { font-size: 13px; display: block; }
+  .pm-grid input { width: 100%; }
+  .path { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 10px 0; font: 13px/1.4 var(--mono); }
+  .path span.hop { border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; background: var(--surface-2); }
+  .path span.arrow { color: var(--text-2); }
+</style>
+</head>
+<body data-page="08">
+<main class="wrap">
+  <header class="page-head">
+    <h1>Services Deep Dive: Hands-On</h1>
+    <p class="lead">Build a Deployment, then put each kind of Service in front of it: ClusterIP, NodePort, LoadBalancer and ExternalName. You'll learn what <code>port</code>, <code>targetPort</code> and <code>nodePort</code> mean, and break discovery on purpose to see how selectors work.</p>
+  </header>
+
+  <div class="xref-box"><div>Why Services exist (stable IPs, discovery, load balancing) is explained in <a href="06-services-intro.html">Lesson 6</a>. Deployments are covered in <a href="05-deployments-replicasets.html">Lesson 5</a>. This lesson is the practical follow-up.</div></div>
+
+  <h2>Step 1: a Deployment with two replicas</h2>
+  <p>The demo uses a small web app that listens on <strong>port 8000</strong> and answers at the path <code>/demo</code>. You can use any app; just know which port it listens on (look in its Dockerfile for <code>EXPOSE</code> or the start command). We use two replicas so we can see load balancing.</p>
+  <p>Build the image. On Minikube, build it inside the cluster's Docker so the cluster can find it:</p>
+<pre><code>eval $(minikube docker-env)
+docker build -t sample-python-app:v1 .</code></pre>
+  <p>Then write <code>deployment.yaml</code>. You never need to memorise it; copy the example from the Kubernetes docs and change the name, labels, replicas, image and port.</p>
+<pre><code>apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sample-python-app
+  labels:
+    app: sample-python-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: sample-python-app
+  template:
+    metadata:
+      labels:
+        app: sample-python-app      # Services will look for this
+    spec:
+      containers:
+        - name: python-app
+          image: sample-python-app:v1
+          imagePullPolicy: IfNotPresent   # use the locally built image
+          ports:
+            - containerPort: 8000</code></pre>
+<pre><code>kubectl apply -f deployment.yaml
+kubectl get deploy
+kubectl get pods -o wide</code></pre>
+  <p>The <code>-o wide</code> output shows each Pod's IP. Delete one Pod with <code>kubectl delete pod &lt;name&gt;</code> and list again: the ReplicaSet creates a replacement, usually with a <strong>different IP</strong>. That is the problem Services solve.</p>
+  <p>These Pod IPs only work <em>inside</em> the cluster. On Minikube you can test with <code>minikube ssh</code> and then <code>curl -L http://&lt;pod-ip&gt;:8000/demo</code> (the <code>-L</code> follows the app's redirect). From your own laptop, the same URL fails.</p>
+
+  <h2>Step 2: the three port fields</h2>
+  <p>Before writing a Service, get these three straight. Mixing them up is the number one beginner mistake.</p>
+  <div class="table-wrap"><table>
+    <tr><th>Field</th><th>Meaning</th><th>In our demo</th></tr>
+    <tr><td><code>targetPort</code></td><td>The port the <strong>container</strong> listens on. Where the Service sends traffic.</td><td>8000</td></tr>
+    <tr><td><code>port</code></td><td>The port the <strong>Service</strong> itself listens on, on its ClusterIP.</td><td>80</td></tr>
+    <tr><td><code>nodePort</code></td><td>The port opened on <strong>every node</strong> (NodePort and LoadBalancer types only). Range 30000-32767.</td><td>30007</td></tr>
+  </table></div>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 700 200" role="img" aria-label="A request enters on node port 30007, goes to the Service port 80, and reaches the container on target port 8000.">
+      <defs><marker id="arr8" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" style="fill:var(--text-2)"/></marker></defs>
+      <rect class="s-box2" x="10" y="70" width="100" height="56" rx="8"/><text class="s-text-b" x="60" y="103" text-anchor="middle">Client</text>
+      <path class="s-line-o" d="M110 98 H170" marker-end="url(#arr8)"/>
+      <rect class="s-dash" x="172" y="20" width="518" height="160" rx="12"/>
+      <text class="s-text-s" x="186" y="42">Cluster</text>
+      <rect class="s-purple" x="190" y="66" width="130" height="64" rx="8"/><text class="s-text-b" x="255" y="92" text-anchor="middle">Node</text><text class="s-text-s" x="255" y="112" text-anchor="middle">nodePort 30007</text>
+      <path class="s-line-o" d="M320 98 H370" marker-end="url(#arr8)"/>
+      <rect class="s-orange" x="372" y="66" width="130" height="64" rx="8"/><text class="s-text-ink" x="437" y="92" text-anchor="middle">Service</text><text class="s-text-ink" x="437" y="112" text-anchor="middle">port 80</text>
+      <path class="s-line-o" d="M502 98 H552" marker-end="url(#arr8)"/>
+      <rect class="s-blue" x="554" y="66" width="124" height="64" rx="8"/><text class="s-text-b" x="616" y="92" text-anchor="middle">Pod</text><text class="s-text-s" x="616" y="112" text-anchor="middle">targetPort 8000</text>
+    </svg>
+    <figcaption>A NodePort request passes through three ports before it reaches your app.</figcaption>
+  </figure>
+
+  <div class="demo" id="demo-ports">
+    <div class="demo-head">Try it: trace a request through the ports</div>
+    <div class="demo-body">
+      <p>Change the numbers and see the path. Try a nodePort outside 30000-32767, or use <b>Break it</b> to see what a wrong targetPort does.</p>
+      <div class="pm-grid">
+        <div><label for="pm-node">nodePort</label><input type="number" id="pm-node" value="30007"></div>
+        <div><label for="pm-port">port (Service)</label><input type="number" id="pm-port" value="80"></div>
+        <div><label for="pm-target">targetPort</label><input type="number" id="pm-target" value="8000"></div>
+        <div><label for="pm-app">App listens on</label><input type="number" id="pm-app" value="8000"></div>
+      </div>
+      <div class="row"><button class="btn primary" id="pm-go">Trace request</button><button class="btn" id="pm-break">Break it (targetPort 80)</button></div>
+      <div class="path" id="pm-path"></div>
+      <div class="output" id="pm-out">Press <b>Trace request</b>.</div>
+    </div>
+  </div>
+
+  <h2>Step 3: ClusterIP (the default)</h2>
+  <p>With no <code>type</code>, you get ClusterIP: a stable virtual IP that works only inside the cluster. It gives you discovery and load balancing, and it is what Pods use to call each other.</p>
+<pre><code>apiVersion: v1
+kind: Service
+metadata:
+  name: sample-python-app
+spec:
+  selector:
+    app: sample-python-app      # copy from the Pod TEMPLATE labels
+  ports:
+    - port: 80
+      targetPort: 8000</code></pre>
+  <p>Or generate it with a command: <code>kubectl expose deployment sample-python-app --port=80 --target-port=8000</code>.</p>
+
+  <h2>Step 4: NodePort</h2>
+  <p>Add <code>type: NodePort</code> and a <code>nodePort</code> to open the same port on every node. Anyone who can reach a node's IP (everyone in your company network or VPC) can now use the app.</p>
+<pre><code>apiVersion: v1
+kind: Service
+metadata:
+  name: sample-python-app
+spec:
+  type: NodePort
+  selector:
+    app: sample-python-app
+  ports:
+    - port: 80
+      targetPort: 8000
+      nodePort: 30007           # optional; Kubernetes picks one if omitted</code></pre>
+<pre><code>kubectl apply -f service.yaml
+kubectl get svc
+# NAME                TYPE       CLUSTER-IP     PORT(S)        AGE
+# sample-python-app   NodePort   10.96.121.5    80:30007/TCP   5s
+
+minikube ip                                  # node IP
+curl -L http://$(minikube ip):30007/demo     # from your laptop</code></pre>
+  <p>Notice <code>80:30007/TCP</code>: Service port 80 is mapped to node port 30007. A NodePort Service <em>also</em> has a ClusterIP, so the inside-the-cluster address still works. Use the node port number, not 80, when calling a node IP. People outside your network still cannot reach it, because they cannot reach your nodes.</p>
+  <div class="callout tip"><span class="callout-title">Tip</span>On Minikube with some drivers the node IP is not directly reachable. Run <code>minikube service sample-python-app --url</code> to get a working URL.</div>
+
+  <h2>Step 5: LoadBalancer</h2>
+  <p>Change the type to <code>LoadBalancer</code> (edit the file and re-apply, or <code>kubectl edit svc sample-python-app</code>). On a cloud cluster (EKS, AKS, GKE), the cloud controller manager creates a real load balancer and fills in the external address after a minute or two.</p>
+<pre><code>kubectl get svc sample-python-app
+# NAME                TYPE           EXTERNAL-IP
+# sample-python-app   LoadBalancer   a1b2c3.elb.amazonaws.com    (on AWS)</code></pre>
+  <p>Anyone on the internet can now use that address. On Minikube or other local clusters nobody provides the load balancer, so <code>EXTERNAL-IP</code> stays <code>&lt;pending&gt;</code>. Run <code>minikube tunnel</code> in a second terminal to simulate it, or install MetalLB on bare-metal clusters.</p>
+  <div class="callout warn"><span class="callout-title">Watch out</span>Every LoadBalancer Service usually creates its own cloud load balancer and public IP, and you pay for each. For many HTTP apps, a single <a href="09-ingress-tls.html">Ingress</a> is the cheaper pattern.</div>
+
+  <h2>ExternalName: a DNS alias</h2>
+  <p>The fourth type does not select Pods at all. An <code>ExternalName</code> Service makes an <strong>outside</strong> hostname look like an in-cluster Service name. Pods call <code>my-db</code>, and cluster DNS answers with a CNAME to the real address. Handy when a database lives outside the cluster and you may move it later.</p>
+<pre><code>apiVersion: v1
+kind: Service
+metadata:
+  name: my-db
+spec:
+  type: ExternalName
+  externalName: db.example.com</code></pre>
+
+  <h2>Experiment: break service discovery</h2>
+  <p>Proof that Services find Pods by label only:</p>
+  <ol class="steps">
+    <li>Edit the Service selector to a typo, for example <code>app: sample-python-ap</code>, and apply it.</li>
+    <li>Run <code>kubectl get endpoints sample-python-app</code>. The list is empty, and <code>curl</code> now fails to connect, even though both Pods are healthy.</li>
+    <li>Fix the selector and apply again. Within a few seconds kube-proxy updates the rules and the app answers again.</li>
+  </ol>
+  <p>Tip: always create Services with <code>kubectl apply -f</code> so you can edit the file and re-apply later.</p>
+
+  <h2>Experiment: see the load balancing</h2>
+  <p>Send several requests through the Service, then look at which Pod logged each one:</p>
+<pre><code>for i in 1 2 3 4 5 6; do curl -s -o /dev/null http://$(minikube ip):30007/demo; done
+kubectl logs -l app=sample-python-app --prefix --tail=10</code></pre>
+  <p>The <code>--prefix</code> flag adds the Pod name to each log line. You will see both Pods handled requests. (A traffic viewer such as Kubeshark can also draw this flow, showing each request going from the Service to one of the two Pod IPs.)</p>
+
+  <div class="callout interview"><span class="callout-title">Interview angle</span>"What is the difference between <code>port</code>, <code>targetPort</code> and <code>nodePort</code>?" Service port = where the Service listens; targetPort = the container's port; nodePort = the port on every node (30000-32767). Be ready to say that a wrong targetPort gives "connection refused" while a wrong selector gives an empty endpoint list.</div>
+
+  <h2>Check yourself</h2>
+  <div class="quiz" data-answer="2">
+    <div class="q">Your container listens on 8000. The Service has <code>port: 80</code>. What should <code>targetPort</code> be?</div>
+    <div class="opts"><button>80</button><button>30007</button><button>8000</button></div>
+    <div class="explain">targetPort is always the port the container itself listens on.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">On Minikube, your LoadBalancer Service shows <code>EXTERNAL-IP &lt;pending&gt;</code>. Why?</div>
+    <div class="opts"><button>The Deployment has too few replicas</button><button>No cloud provider exists to create the load balancer (use <code>minikube tunnel</code> or MetalLB)</button><button>The selector has a typo</button></div>
+    <div class="explain">The cloud controller manager creates load balancers on cloud platforms. A local cluster has nothing to do it, so the address stays pending.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">Which Service type has no selector and just returns a DNS alias to an outside hostname?</div>
+    <div class="opts"><button>ExternalName</button><button>NodePort</button><button>ClusterIP</button></div>
+    <div class="explain">ExternalName maps a Service name to an external DNS name using a CNAME record.</div>
+  </div>
+
+  <section class="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li><code>port</code> is the Service's port, <code>targetPort</code> is the container's port, <code>nodePort</code> is the node's port (30000-32767).</li>
+      <li><strong>ClusterIP</strong> is internal, <strong>NodePort</strong> adds a port on every node, <strong>LoadBalancer</strong> adds a cloud load balancer. Each type includes the one before it.</li>
+      <li>The Service selector must match the <strong>Pod template labels</strong>; check with <code>kubectl get endpoints</code>.</li>
+      <li>LoadBalancer needs a cloud provider (or MetalLB / <code>minikube tunnel</code> locally).</li>
+      <li><strong>ExternalName</strong> is a DNS alias for something outside the cluster.</li>
+    </ul>
+  </section>
+</main>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  function hop(t) { return '<span class="hop">' + t + '</span>'; }
+  var arrow = '<span class="arrow">&rarr;</span>';
+  function trace() {
+    var node = +$("pm-node").value, port = +$("pm-port").value, target = +$("pm-target").value, app = +$("pm-app").value;
+    var out = $("pm-out"), path = $("pm-path");
+    if (!(node >= 30000 && node <= 32767)) {
+      path.innerHTML = hop("Client") + arrow + hop("Node :" + node) + arrow + hop("rejected");
+      out.className = "output bad";
+      out.innerHTML = "<b>Invalid nodePort.</b> Kubernetes only allows 30000-32767 by default, so <code>kubectl apply</code> would fail.";
+      return;
+    }
+    var h = hop("Client") + arrow + hop("Node :" + node) + arrow + hop("Service :" + port) + arrow + hop("Pod :" + target);
+    path.innerHTML = h;
+    if (target !== app) {
+      out.className = "output bad";
+      out.innerHTML = "<b>Connection refused.</b> The Service forwards to port " + target + " but your app listens on " + app + ". Set <code>targetPort: " + app + "</code>.";
+    } else {
+      out.className = "output ok";
+      out.innerHTML = "<b>Success.</b> <code>curl http://&lt;node-ip&gt;:" + node + "</code> reaches the app. Inside the cluster, <code>http://&lt;cluster-ip&gt;:" + port + "</code> works too.";
+    }
+  }
+  $("pm-go").addEventListener("click", trace);
+  $("pm-break").addEventListener("click", function () { $("pm-target").value = 80; trace(); });
+  trace();
+})();
+</script>
+</body>
+</html>
