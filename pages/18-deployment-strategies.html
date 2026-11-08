@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deployment Strategies · Kubernetes Simplified</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/site.js"></script>
+<style>
+  .pods { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; min-height: 44px; }
+  .pod { width: 44px; height: 38px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font: 700 13px var(--mono); border: 1px solid var(--border); }
+  .pod.v1 { background: color-mix(in srgb, var(--blue) 28%, var(--surface)); color: var(--text); }
+  .pod.v2 { background: color-mix(in srgb, var(--green) 28%, var(--surface)); color: var(--text); }
+  .pod.off { background: var(--surface-2); color: var(--text-2); border-style: dashed; }
+  .pods-label { font-size: 13px; color: var(--text-2); margin-top: 6px; }
+  .legend span { display: inline-block; margin-right: 12px; font-size: 13px; }
+</style>
+</head>
+<body data-page="18">
+<main class="wrap">
+  <header class="page-head">
+    <h1>Deployment Strategies</h1>
+    <p class="lead">How do you ship version 2 of an app without users noticing? You will learn why simply deleting and reinstalling causes downtime, and how rolling update, canary and blue/green releases each reduce the risk, with a step-through demo to compare them.</p>
+  </header>
+
+  <div class="xref-box"><div>Deployments, ReplicaSets and rolling updates are introduced in <a href="05-deployments-replicasets.html">Lesson 5</a>. Ingress is covered in <a href="09-ingress-tls.html">Lesson 9</a>. Here we compare the release strategies.</div></div>
+
+  <h2>Why do you need a strategy?</h2>
+  <p>Imagine a Payments service running version 1 on 4 replicas. The easy way to release version 2 is to delete v1, then install v2. If deleting takes 2 minutes and the new Pods need 5 more minutes to be ready, payments are <strong>down for several minutes</strong>. That means lost revenue and unhappy users.</p>
+  <p>A <strong>deployment strategy</strong> is a plan for replacing the old version with the new one so downtime is zero or close to it, and so a bad release does little harm.</p>
+  <div class="table-wrap"><table>
+    <tr><th>Strategy</th><th>Idea</th><th>Built into Kubernetes?</th></tr>
+    <tr><td>Recreate</td><td>Stop all v1, then start v2</td><td>Yes (<code>strategy.type: Recreate</code>)</td></tr>
+    <tr><td>Rolling update</td><td>Replace Pods gradually</td><td>Yes (the default)</td></tr>
+    <tr><td>Canary</td><td>Send a small share of real traffic to v2</td><td>No: needs an ingress controller or service mesh</td></tr>
+    <tr><td>Blue/green</td><td>Run v2 beside v1, then flip all traffic</td><td>No: switch a Service or Ingress</td></tr>
+  </table></div>
+
+  <h2>1. Rolling update (the default)</h2>
+  <p>If you use a Deployment, you are already using this. Change the image and Kubernetes adds <strong>one new v2 Pod</strong>, waits until it is ready, removes one v1 Pod, and repeats until all Pods are v2.</p>
+  <p>Two settings control the pace. Both default to <strong>25%</strong>:</p>
+  <ul>
+    <li><code>maxSurge</code>: how many <em>extra</em> Pods may exist above the desired count (25% of 4 = 1).</li>
+    <li><code>maxUnavailable</code>: how many Pods may be missing at once (25% of 4 = 1).</li>
+  </ul>
+<pre><code>apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payments
+spec:
+  replicas: 4
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+  selector:
+    matchLabels:
+      app: payments
+  template:
+    metadata:
+      labels:
+        app: payments
+    spec:
+      containers:
+        - name: payments
+          image: myrepo/payments:v1
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080</code></pre>
+  <p>Trigger a release and watch it:</p>
+<pre><code>kubectl set image deployment/payments payments=myrepo/payments:v2
+kubectl get pods -w
+kubectl rollout status deployment/payments
+kubectl rollout undo deployment/payments     # go back if needed</code></pre>
+  <div class="callout warn"><span class="callout-title">Always add a readiness probe</span>Without a readiness probe, Kubernetes treats a Pod as ready as soon as its container starts. It may then remove an old Pod even though the new one cannot serve traffic yet.</div>
+  <p><strong>What if the new version is broken?</strong> Say you set a non-existent image. The new Pod fails (see <a href="19-imagepullbackoff.html">ImagePullBackOff</a>) but the other three v1 Pods keep serving, and the Service only sends traffic to healthy Pods. Users are not hurt.</p>
+  <p><strong>Limits:</strong> it is "almost" zero downtime, not guaranteed, because a new version may need time to connect to databases or other services. You also have no control over speed or who sees v2: within minutes everyone does.</p>
+
+  <h2>2. Canary</h2>
+  <p>Why do other strategies exist if rolling update already avoids downtime? Because of a testing gap. v2 is tested in dev, QA and pre-production, but those have less data and smaller clusters than production. Some bugs only show up in production.</p>
+  <div class="callout analogy"><span class="callout-title">Think of it like…</span>Miners once carried a canary into the mine: if the bird fell ill, they knew to retreat before people were hurt. A canary release sends a few real users to the new version first.</div>
+  <p>You run v1 and v2 together, and tell the load balancer to send, say, <strong>10%</strong> of traffic to v2 and 90% to v1. If v2 misbehaves, only a few users are affected and you set the weight back to 0. If it looks good, raise it to 30%, 50%, then 100%. You can hold at 10% for days while the QE team runs tests.</p>
+  <p>With the NGINX ingress controller, you create two of everything (Deployment, Service, Ingress), and mark the second Ingress as a canary with annotations:</p>
+<pre><code>apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: echo-canary
+  annotations:
+    nginx.ingress.kubernetes.io/canary: "true"
+    nginx.ingress.kubernetes.io/canary-weight: "10"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: echo.prod.mydomain.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: echo-canary      # the v2 Service
+                port:
+                  number: 80</code></pre>
+  <p>The main Ingress (no canary annotation) points to the v1 Service with the same host. Test by sending 10 requests: about 9 hit v1 and 1 hits v2. Then change the weight with <code>kubectl edit ingress echo-canary</code> (the controller reconfigures itself in seconds). The v2 side needs fewer replicas, since it gets less traffic.</p>
+  <p><strong>Cost:</strong> more YAML and moving parts. Use it when even a small outage or bad experience is costly.</p>
+
+  <h2>3. Blue/green</h2>
+  <p>Keep the current version (<strong>blue</strong>) untouched and deploy a complete, identical copy of the new version (<strong>green</strong>) next to it, with its own Service. Test green privately. Then, in one step, change the Ingress (or Service selector) from the blue Service to the green Service. All traffic moves at once. If something is wrong, point it back to blue: an instant rollback.</p>
+<pre><code># in the Ingress backend, change:
+service:
+  name: payments-blue      # before
+# to:
+service:
+  name: payments-green     # after: all traffic flips</code></pre>
+  <p><strong>Safest but most expensive:</strong> you pay for double the Pods (CPU and memory) for as long as both exist. For 100 services that is a lot, so few companies use it everywhere. Banks and financial services, where a quick rollback matters more than cost, often do.</p>
+
+  <h2>Compare them side by side</h2>
+  <div class="table-wrap"><table>
+    <tr><th></th><th>Rolling</th><th>Canary</th><th>Blue/green</th></tr>
+    <tr><td>Downtime</td><td>Almost none</td><td>Almost none</td><td>None</td></tr>
+    <tr><td>Who sees v2</td><td>Everyone, quickly</td><td>A chosen percentage</td><td>Nobody, then everybody</td></tr>
+    <tr><td>Rollback</td><td>Roll back again (minutes)</td><td>Set weight to 0 (instant)</td><td>Flip back (instant)</td></tr>
+    <tr><td>Extra cost</td><td>Small</td><td>Small</td><td>Double the Pods</td></tr>
+    <tr><td>Complexity</td><td>Lowest</td><td>Medium</td><td>Medium</td></tr>
+  </table></div>
+
+  <div class="demo" id="demo-strat">
+    <div class="demo-head">Try it: step through a release</div>
+    <div class="demo-body">
+      <p>Choose a strategy and press <b>Next step</b> to see which Pods exist and where traffic goes.</p>
+      <div class="row">
+        <select id="st-sel" aria-label="Strategy">
+          <option value="recreate">Recreate</option>
+          <option value="rolling" selected>Rolling update</option>
+          <option value="canary">Canary</option>
+          <option value="bluegreen">Blue/green</option>
+        </select>
+        <button class="btn primary" id="st-next">Next step</button>
+        <button class="btn" id="st-reset">Reset</button>
+      </div>
+      <div class="legend"><span><b style="color:var(--blue)">v1</b> old</span><span><b style="color:var(--green)">v2</b> new</span><span>off = no Pod</span></div>
+      <div class="pods" id="st-pods"></div>
+      <div class="output" id="st-out"></div>
+    </div>
+  </div>
+
+  <div class="callout interview"><span class="callout-title">Interview angle</span>"What deployment strategies do you know?" Rolling update is the default; canary tests v2 on a slice of real production traffic with easy rollback; blue/green is the safest but doubles resource cost. Mention <code>maxSurge</code>/<code>maxUnavailable</code> and readiness probes, and that canary and blue/green need an ingress controller (or similar) because Kubernetes does not do them natively.</div>
+
+  <h2>Check yourself</h2>
+  <div class="quiz" data-answer="1">
+    <div class="q">What are the default <code>maxSurge</code> and <code>maxUnavailable</code> of a rolling update?</div>
+    <div class="opts"><button>1 and 0</button><button>25% and 25%</button><button>50% and 50%</button></div>
+    <div class="explain">Both default to 25%. With 4 replicas, that means one extra Pod and at most one unavailable Pod at a time.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">Which strategy lets you test v2 on production with only about 10% of users?</div>
+    <div class="opts"><button>Recreate</button><button>Blue/green</button><button>Canary</button></div>
+    <div class="explain">Canary routes a weighted share of traffic to the new version, so a bug affects only a few users.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">Why is blue/green used by fewer companies than canary?</div>
+    <div class="opts"><button>It keeps a full duplicate set of Pods, which doubles resource cost</button><button>It causes downtime</button><button>It cannot roll back</button></div>
+    <div class="explain">It is very safe with instant rollback, but running two complete environments is expensive.</div>
+  </div>
+
+  <section class="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li>Deleting and reinstalling causes downtime; a strategy replaces versions safely.</li>
+      <li><strong>Rolling update</strong> is Kubernetes' default: gradual replacement controlled by <code>maxSurge</code> and <code>maxUnavailable</code>; add readiness probes.</li>
+      <li><strong>Canary</strong> sends a small, adjustable share of real traffic to v2, so production testing is low-risk.</li>
+      <li><strong>Blue/green</strong> runs two full copies and flips traffic in one step: safest, but costly.</li>
+      <li>Canary and blue/green are done with an ingress controller (annotations or a changed backend), not by Kubernetes alone.</li>
+    </ul>
+  </section>
+</main>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  function mk(v1, v2, off) { var a = [], i; for (i = 0; i < v1; i++) a.push("v1"); for (i = 0; i < v2; i++) a.push("v2"); for (i = 0; i < off; i++) a.push("off"); return a; }
+  var S = {
+    recreate: [
+      { p: mk(4, 0, 0), t: "100% to v1", n: "Version 1 is serving 4 replicas." },
+      { p: mk(0, 0, 4), t: "nobody: DOWNTIME", n: "All v1 Pods are deleted. Users get errors.", bad: true },
+      { p: mk(0, 4, 0), t: "100% to v2", n: "v2 Pods have started. Minutes of downtime have passed." }
+    ],
+    rolling: [
+      { p: mk(4, 0, 0), t: "100% to v1", n: "Start: 4 x v1." },
+      { p: mk(4, 1, 0), t: "v1 and v2 Pods that are ready", n: "maxSurge: 1 new v2 Pod is added (5 Pods in total) and must become ready." },
+      { p: mk(3, 1, 0), t: "mostly v1", n: "One v1 Pod is removed. If v2 had failed, 3 v1 Pods would still serve users." },
+      { p: mk(3, 2, 0), t: "mixed", n: "Next v2 Pod is added." },
+      { p: mk(2, 2, 0), t: "mixed", n: "Another v1 Pod is removed." },
+      { p: mk(2, 3, 0), t: "mixed", n: "Next v2 Pod is added." },
+      { p: mk(1, 3, 0), t: "mostly v2", n: "Another v1 Pod is removed." },
+      { p: mk(0, 4, 0), t: "100% to v2", n: "Done in a minute or two. You had no control over who saw v2 and when." }
+    ],
+    canary: [
+      { p: mk(4, 0, 0), t: "100% v1", n: "Start: 4 x v1." },
+      { p: mk(4, 1, 0), t: "90% v1 / 10% v2", n: "One v2 Pod runs. canary-weight: 10. Only 1 in 10 users see v2." },
+      { p: mk(4, 1, 0), t: "70% v1 / 30% v2", n: "After days of tests, edit the Ingress: canary-weight: 30." },
+      { p: mk(2, 3, 0), t: "30% v1 / 70% v2", n: "More confidence. Scale v2 up, v1 down, raise the weight." },
+      { p: mk(0, 4, 0), t: "100% v2", n: "Weight 100. Promotion complete. (A bug at any step: set weight 0 for instant rollback.)" }
+    ],
+    bluegreen: [
+      { p: mk(4, 0, 0), t: "100% blue (v1)", n: "Start: blue environment serves users through its Service." },
+      { p: mk(4, 4, 0), t: "100% blue (v1)", n: "Green (v2) is fully deployed beside blue and tested privately. Double the Pods = double the cost." },
+      { p: mk(4, 4, 0), t: "100% green (v2)", n: "Ingress now points to the green Service. All users switched in one step." },
+      { p: mk(0, 4, 0), t: "100% green (v2)", n: "After a quiet period, delete blue to stop paying for it. (Until then, flipping back is an instant rollback.)" }
+    ]
+  };
+  var step = 0;
+  function render() {
+    var seq = S[$("st-sel").value], s = seq[step];
+    $("st-pods").innerHTML = s.p.map(function (x) { return '<div class="pod ' + x + '">' + x + "</div>"; }).join("");
+    var o = $("st-out");
+    o.className = "output" + (s.bad ? " bad" : "");
+    o.innerHTML = "<b>Step " + (step + 1) + " of " + seq.length + ".</b> Traffic: <b>" + s.t + "</b><br>" + s.n;
+    $("st-next").disabled = step >= seq.length - 1;
+  }
+  $("st-next").addEventListener("click", function () { var seq = S[$("st-sel").value]; if (step < seq.length - 1) { step++; render(); } });
+  $("st-reset").addEventListener("click", function () { step = 0; render(); });
+  $("st-sel").addEventListener("change", function () { step = 0; render(); });
+  render();
+})();
+</script>
+</body>
+</html>
