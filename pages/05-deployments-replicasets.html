@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deployments &amp; ReplicaSets · Kubernetes Simplified</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/site.js"></script>
+<style>
+  .pods { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; min-height: 44px; }
+  .pod { font: 12px var(--mono); padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface-2); }
+  .pod.v1 { border-color: var(--blue, #326ce5); }
+  .pod.v2 { border-color: var(--green); background: var(--surface); }
+  .log { font: 12px/1.5 var(--mono); max-height: 130px; overflow-y: auto; }
+</style>
+</head>
+<body data-page="05">
+<main class="wrap">
+  <header class="page-head">
+    <h1>Deployments &amp; ReplicaSets</h1>
+    <p class="lead">A bare Pod can't heal or scale. A Deployment fixes that: you say how many copies you want and which version, and Kubernetes keeps it true, even during updates. You'll learn Deployments, ReplicaSets, scaling, rolling updates and rollbacks.</p>
+  </header>
+
+  <div class="xref-box"><div>This lesson builds on <a href="04-pods.html">Lesson 4: Pods</a> (YAML structure, kubectl basics, labels).</div></div>
+
+  <h2>Container vs Pod vs Deployment</h2>
+  <p>This is a classic entry-level interview question, and if you can't answer it, interviewers assume you haven't used Kubernetes. Here is the answer in three steps.</p>
+  <ul>
+    <li><strong>Container:</strong> you run it with a command like <code>docker run -d -p 80:80 -v ... --network ... image</code>, passing every option on the command line.</li>
+    <li><strong>Pod:</strong> Kubernetes' enterprise version of that. The same options go into a YAML <em>manifest</em>, so a Pod manifest is simply the "running specification" of your container(s). A Pod can hold several containers, for example your app plus a sidecar (service meshes use this) that share networking over <code>localhost</code> and share volumes.</li>
+    <li><strong>Deployment:</strong> a wrapper on top of Pods that adds what Pods lack: auto-healing, auto-scaling and zero-downtime updates.</li>
+  </ul>
+  <p>A Pod is just a specification for running containers. It has no auto-healing or auto-scaling. So Kubernetes' advice is: <strong>don't create Pods directly; create a Deployment</strong>. You still learn Pods, because in the end it's Pods that run. (Pods are covered in <a href="04-pods.html">Lesson 4</a>.)</p>
+
+  <h2>Why not just use Pods?</h2>
+  <p>Imagine you run an app as a plain Pod and someone deletes it by accident, or its node crashes, or a network problem kills it. The app is gone, and customers who try to reach it find nothing. Docker had the same weakness, so where is the Kubernetes advantage? You get it only by creating the <em>right resource</em>. And if a million users arrive, one Pod isn't enough; you want, say, two or a hundred copies sharing the load.</p>
+  <p>You need something to watch the Pods and keep the right number alive. That's a <strong>controller</strong>: a program (Kubernetes' built-in ones are written in Go) whose whole job is to make the <strong>actual</strong> state of the cluster equal the <strong>desired</strong> state written in your YAML. Anything that does this is a controller. The controller manager from <a href="02-architecture.html">Lesson 2</a> runs the built-in ones, and you can add custom ones such as Argo CD (more in <a href="12-crds-custom-controllers.html">Lesson 12</a>).</p>
+
+  <h2>The chain: Deployment, ReplicaSet, Pods</h2>
+  <ul>
+    <li><strong>Pod:</strong> runs your container.</li>
+    <li><strong>ReplicaSet:</strong> a Kubernetes controller that keeps the number of Pods the Deployment asked for. If one disappears, it creates another. This is what actually implements auto-healing.</li>
+    <li><strong>Deployment:</strong> a high-level abstraction on top. You create just one resource and it creates the ReplicaSet, which creates the Pods. On its own it does nothing; it hands the work to the ReplicaSet. It also adds updating and rolling back versions.</li>
+  </ul>
+  <figure class="diagram">
+    <svg viewBox="0 0 700 190" role="img" aria-label="A Deployment owns a ReplicaSet, which owns three Pods.">
+      <defs><marker id="arr5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" style="fill:var(--text-2)"/></marker></defs>
+      <rect class="s-purple" x="10" y="60" width="170" height="70" rx="10"/>
+      <text class="s-text-b" x="95" y="92" text-anchor="middle">Deployment</text><text class="s-text-s" x="95" y="112" text-anchor="middle">version + updates</text>
+      <rect class="s-blue" x="245" y="60" width="170" height="70" rx="10"/>
+      <text class="s-text-b" x="330" y="92" text-anchor="middle">ReplicaSet</text><text class="s-text-s" x="330" y="112" text-anchor="middle">keeps 3 running</text>
+      <rect class="s-orange-soft" x="500" y="12" width="180" height="40" rx="8"/><text class="s-text-b" x="590" y="38" text-anchor="middle">Pod</text>
+      <rect class="s-orange-soft" x="500" y="75" width="180" height="40" rx="8"/><text class="s-text-b" x="590" y="101" text-anchor="middle">Pod</text>
+      <rect class="s-orange-soft" x="500" y="138" width="180" height="40" rx="8"/><text class="s-text-b" x="590" y="164" text-anchor="middle">Pod</text>
+      <path class="s-line" d="M180 95 H243" marker-end="url(#arr5)"/>
+      <path class="s-line" d="M415 85 L498 32" marker-end="url(#arr5)"/>
+      <path class="s-line" d="M415 95 H498" marker-end="url(#arr5)"/>
+      <path class="s-line" d="M415 105 L498 158" marker-end="url(#arr5)"/>
+    </svg>
+    <figcaption>You manage the Deployment; it manages ReplicaSets; they manage Pods.</figcaption>
+  </figure>
+  <div class="callout analogy"><span class="callout-title">Think of it like…</span>A shift manager (Deployment) who hires a team lead (ReplicaSet) for each version of the staff handbook. The team lead makes sure exactly 3 workers (Pods) are always on duty. For a new handbook, the manager brings in a new team lead and retires the old one gradually.</div>
+
+  <h2>Desired state and self-healing</h2>
+  <p>A Deployment's manifest states the <strong>desired state</strong>: image, number of replicas. Kubernetes constantly compares it with what is running and fixes any difference. That is why a deleted Pod comes back.</p>
+<pre><code>apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+  labels:
+    app: nginx
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.26
+          ports:
+            - containerPort: 80</code></pre>
+  <ul>
+    <li><code>replicas</code>: how many Pods you want.</li>
+    <li><code>template</code>: a Pod blueprint (the same <code>metadata</code> + <code>spec</code> you wrote in <a href="04-pods.html">Lesson 4</a>).</li>
+    <li><code>selector.matchLabels</code>: which Pods belong to this Deployment. It <strong>must match</strong> the labels in <code>template.metadata.labels</code>, otherwise the Deployment is rejected.</li>
+  </ul>
+<pre><code>kubectl apply -f deployment.yaml
+kubectl get deployments
+kubectl get replicaset
+kubectl get pods                     # names look like nginx-deployment-5d9c7b8f4-abcde
+kubectl delete pod &lt;one-pod-name&gt;    # watch a replacement appear
+kubectl get pods -w                  # -w = keep watching</code></pre>
+  <p>Everything below is hands-on, so try it. Before you start, check that your cluster is clean: <code>kubectl get all</code> lists the Pods, Deployments, Services and so on in the current namespace, and <code>kubectl get all -A</code> does it for all namespaces.</p>
+  <p>Notice the Pod names: the Deployment name, then the ReplicaSet's hash, then a random suffix. Delete one and a new name appears within seconds.</p>
+
+  <h2>Hands-on: see the controller work</h2>
+  <p>Try this on any cluster (minikube is fine). It is the best way to feel what a Deployment gives you.</p>
+  <ol class="steps">
+    <li><strong>First, the problem.</strong> Create a plain Pod (<code>kubectl apply -f pod.yaml</code>), note its IP with <code>kubectl get pods -o wide</code>, and check it from inside the cluster (on minikube: <code>minikube ssh</code>, then <code>curl POD_IP</code>). It works. Now <code>kubectl delete pod nginx</code> and curl again: the app is gone, and nothing brings it back.</li>
+    <li><strong>Create a Deployment</strong> with <code>replicas: 1</code> (<code>kubectl apply -f deployment.yaml</code>). Then run <code>kubectl get deploy</code>, <code>kubectl get rs</code> (<code>rs</code> is short for ReplicaSet) and <code>kubectl get pods</code>. You created one resource, and all three exist.</li>
+    <li><strong>Watch it heal.</strong> In one terminal run <code>kubectl get pods -w</code>. In another, delete the Pod. You see the old Pod go <code>Terminating</code> while a new one is already <code>Running</code>; deletion and creation happen in parallel, so the app is never without a Pod.</li>
+    <li><strong>Scale.</strong> Edit <code>replicas: 3</code> in the file and run <code>kubectl apply -f deployment.yaml</code> again. The ReplicaSet notices the new desired state and creates two more Pods, leaving the existing one untouched. Delete any one and it is replaced, still giving you 3.</li>
+  </ol>
+  <p>That is "zero downtime" in action: changing replicas or losing a Pod never disturbs the Pods that are already serving. (Routing real user traffic to the Pods is the job of Services and Ingress, coming in later lessons.)</p>
+
+  <h2>Scaling</h2>
+<pre><code>kubectl scale deployment nginx-deployment --replicas=10
+# or edit "replicas:" in the file and run: kubectl apply -f deployment.yaml</code></pre>
+  <p>Kubernetes creates or removes Pods until the count matches. Scaling can also be automatic with a HorizontalPodAutoscaler, which adds Pods when CPU use rises.</p>
+
+  <h2>Rolling updates</h2>
+  <p>Change the image in the Deployment, for example <code>nginx:1.26</code> to <code>nginx:1.27</code>:</p>
+<pre><code>kubectl set image deployment/nginx-deployment nginx=nginx:1.27
+kubectl rollout status deployment/nginx-deployment</code></pre>
+  <p>By default the Deployment uses a <strong>rolling update</strong>: it creates a <em>new</em> ReplicaSet, starts one or a few new Pods, waits until they are ready, then removes old ones, step by step. At every moment some Pods are serving, so users see no downtime. How many may be added or unavailable at once is controlled by <code>maxSurge</code> and <code>maxUnavailable</code> (each defaults to 25%).</p>
+
+  <h2>Rollback</h2>
+  <p>The old ReplicaSet is kept (scaled to zero), so going back is fast.</p>
+<pre><code>kubectl rollout history deployment/nginx-deployment
+kubectl rollout undo deployment/nginx-deployment
+kubectl rollout undo deployment/nginx-deployment --to-revision=1</code></pre>
+  <p>More release styles (blue/green, canary) are covered in <a href="18-deployment-strategies.html">Lesson 18</a>.</p>
+
+  <div class="demo" id="demo-dep">
+    <div class="demo-head">Try it: Deployment simulator</div>
+    <div class="demo-body">
+      <p>Desired state is on the left; reality is the Pods below. Break things and watch it recover.</p>
+      <div class="row">
+        <button class="btn" id="dp-minus" aria-label="Fewer replicas">-</button>
+        <span>Desired replicas: <b id="dp-n">3</b></span>
+        <button class="btn" id="dp-plus" aria-label="More replicas">+</button>
+        <span>Image: <b id="dp-img">v1</b></span>
+      </div>
+      <div class="pods" id="dp-pods"></div>
+      <div class="row">
+        <button class="btn" id="dp-kill">Delete a random Pod</button>
+        <button class="btn primary" id="dp-update">Rolling update to v2</button>
+        <button class="btn" id="dp-undo">Rollback</button>
+      </div>
+      <div class="output log" id="dp-log">Ready.</div>
+    </div>
+  </div>
+
+  <h2>Labels and selectors</h2>
+  <p>The Deployment doesn't track Pods by name. It finds them by <strong>label</strong>. Any Pod matching <code>app: nginx</code> counts toward the replica number. Good to know: if you hand-create a Pod with that label, the ReplicaSet may count it and delete an extra, and changing a Pod's label removes it from the Deployment's control. Use <code>kubectl get pods --show-labels</code> to check.</p>
+  <div class="callout warn"><span class="callout-title">Watch out</span>Don't edit or create the ReplicaSet directly. Always change the Deployment; it owns the ReplicaSets and your edits would be lost or fight with it.</div>
+  <div class="callout interview"><span class="callout-title">Interview angle</span>Two common questions. (1) "Container vs Pod vs Deployment?" Use the three bullets near the top. (2) "Deployment vs ReplicaSet?" The ReplicaSet is the controller that implements auto-healing by keeping the actual Pod count equal to the desired count; creating a Deployment creates one automatically, and the Deployment adds rollout and rollback on top. Nobody will ask you to write YAML from memory (copy examples from the official docs and change the values). Expect questions like "what is the image field?", "what are labels and selectors for?" and "what do replicas do?"</div>
+  <div class="callout tip"><span class="callout-title">Practice</span>Take an example Deployment from the official Kubernetes docs or the official examples repository on GitHub (the guestbook example is a good one), replace the image with your own app, kill Pods, change replicas and watch <code>kubectl get rs</code>. Day-to-day work is Deployments, not bare Pods.</div>
+
+  <h2>Check yourself</h2>
+  <div class="quiz" data-answer="0">
+    <div class="q">You run a Deployment with 3 replicas and delete one Pod. What happens?</div>
+    <div class="opts"><button>The ReplicaSet creates a new Pod to get back to 3</button><button>The app runs with 2 Pods forever</button><button>The Deployment is deleted</button></div>
+    <div class="explain">The desired state is 3, the actual is 2, so the controller creates another.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">Which command undoes the last rollout?</div>
+    <div class="opts"><button>kubectl delete deployment</button><button>kubectl scale --replicas=0</button><button>kubectl rollout undo deployment/NAME</button></div>
+    <div class="explain">The previous ReplicaSet is still stored, so Kubernetes switches back to it.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">What must <code>spec.selector.matchLabels</code> match?</div>
+    <div class="opts"><button>The Deployment's name</button><button>The labels in the Pod template</button><button>The node names</button></div>
+    <div class="explain">The selector tells the Deployment which Pods are its own, so it must match the template's labels.</div>
+  </div>
+
+  <section class="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li>Deployment manages ReplicaSets; a ReplicaSet keeps N identical Pods running.</li>
+      <li>You declare the desired state; controllers keep reality matching it (self-healing).</li>
+      <li>Scale with <code>kubectl scale</code> or by editing <code>replicas</code>.</li>
+      <li>Updates are rolling by default: new Pods start before old ones stop, so there's no downtime.</li>
+      <li>Roll back with <code>kubectl rollout undo</code>; inspect with <code>rollout status</code> and <code>rollout history</code>.</li>
+      <li>Pods are matched by labels, so selector and template labels must agree.</li>
+    </ul>
+  </section>
+</main>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var n = 3, version = "v1", prev = null, pods = [], busy = false, counter = 0;
+  function mk(v) { counter++; return { id: Math.random().toString(36).slice(2, 7), v: v }; }
+  function log(t) { var l = $("dp-log"); l.innerHTML += "<br>" + t; l.scrollTop = l.scrollHeight; }
+  function draw() {
+    $("dp-n").textContent = n; $("dp-img").textContent = version;
+    $("dp-pods").innerHTML = pods.map(function (p) { return '<span class="pod ' + p.v + '">pod-' + p.id + " " + p.v + "</span>"; }).join("");
+  }
+  function reconcile(why) {
+    var changed = false;
+    while (pods.length < n) { pods.push(mk(version)); changed = true; }
+    while (pods.length > n) { pods.pop(); changed = true; }
+    if (changed) log(why + " Pods now " + pods.length + "/" + n + ".");
+    draw();
+  }
+  function init() { pods = []; for (var i = 0; i < n; i++) pods.push(mk(version)); $("dp-log").textContent = "Deployment created with " + n + " replicas of v1."; draw(); }
+  $("dp-plus").onclick = function () { if (busy || n >= 8) return; n++; reconcile("Scaled up."); };
+  $("dp-minus").onclick = function () { if (busy || n <= 1) return; n--; reconcile("Scaled down."); };
+  $("dp-kill").onclick = function () {
+    if (busy || !pods.length) return;
+    var p = pods.splice(Math.floor(Math.random() * pods.length), 1)[0];
+    log("Deleted pod-" + p.id + ". ReplicaSet notices " + pods.length + "/" + n + "..."); draw();
+    setTimeout(function () { reconcile("Self-healing:"); }, 700);
+  };
+  function roll(target, label) {
+    if (busy) return;
+    if (target === version) { log("Already on " + target + "."); return; }
+    busy = true; prev = version; version = target; draw();
+    log(label + " to " + target + ": new ReplicaSet created.");
+    var step = 0;
+    var t = setInterval(function () {
+      var old = pods.filter(function (p) { return p.v !== target; });
+      if (!old.length) { clearInterval(t); busy = false; log("Rollout complete. All Pods on " + target + ". Zero downtime."); draw(); return; }
+      if (step % 2 === 0) { pods.push(mk(target)); log("Started a new " + target + " Pod (surge)."); }
+      else { pods.splice(pods.indexOf(old[0]), 1); log("Terminated an old Pod after the new one was ready."); }
+      step++; draw();
+    }, 600);
+  }
+  $("dp-update").onclick = function () { roll("v2", "Rolling update"); };
+  $("dp-undo").onclick = function () { roll(version === "v2" ? "v1" : (prev || "v1"), "Rollback"); };
+  init();
+})();
+</script>
+</body>
+</html>
