@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Troubleshooting: CrashLoopBackOff · Kubernetes Simplified</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/site.js"></script>
+<style>
+  .bars { margin: 8px 0; }
+  .bar-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; font: 13px var(--mono); }
+  .bar-row .lab { width: 84px; flex: none; }
+  .bar-row .bar { height: 14px; border-radius: 4px; background: var(--orange); min-width: 3px; }
+  .bar-row .val { color: var(--text-2); }
+</style>
+</head>
+<body data-page="20">
+<main class="wrap">
+  <header class="page-head">
+    <h1>Troubleshooting: CrashLoopBackOff</h1>
+    <p class="lead">Your Pod starts, crashes, restarts, crashes again. Kubernetes shows <code>CrashLoopBackOff</code>. It is a symptom, not a single bug, so you will learn the loop itself, the most common causes (bad command, failing probe, out of memory, app errors) and a debug flow built on <code>logs --previous</code> and <code>describe</code>.</p>
+  </header>
+
+  <div class="xref-box"><div>Pods are covered in <a href="04-pods.html">Lesson 4</a>; the Deployment that keeps restarting them in <a href="05-deployments-replicasets.html">Lesson 5</a>. A different start-up failure, a bad image, is in <a href="19-imagepullbackoff.html">Lesson 19: ImagePullBackOff</a>.</div></div>
+
+  <h2>What is happening</h2>
+  <p>When you apply a Deployment, the scheduler picks a node and the node's kubelet runs the Pod. Its normal life: <code>ContainerCreating</code>, then <code>Running</code>. But the application inside the container can exit or be killed at any moment: right away, after 5 seconds or after a day.</p>
+  <p>By default a Pod's <code>restartPolicy</code> is <code>Always</code>, so the kubelet restarts the container each time. If it keeps crashing, Kubernetes inserts a growing pause between restarts: about <strong>10s, 20s, 40s ... capped at 5 minutes</strong>. A <strong>crash</strong> repeating in a <strong>loop</strong> with a <strong>back-off</strong> delay is <code>CrashLoopBackOff</code>.</p>
+  <figure class="diagram">
+    <svg viewBox="0 0 700 170" role="img" aria-label="Loop: ContainerCreating, Running, Crashed, wait with back-off, then restart.">
+      <defs><marker id="arr20" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" style="fill:var(--text-2)"/></marker></defs>
+      <rect class="s-blue" x="10" y="30" width="150" height="50" rx="8"/>
+      <text class="s-text-b" x="85" y="60" text-anchor="middle">ContainerCreating</text>
+      <rect class="s-green" x="210" y="30" width="110" height="50" rx="8"/>
+      <text class="s-text-b" x="265" y="60" text-anchor="middle">Running</text>
+      <rect class="s-red" x="370" y="30" width="130" height="50" rx="8"/>
+      <text class="s-text-b" x="435" y="60" text-anchor="middle">Error / crash</text>
+      <rect class="s-orange-soft" x="545" y="30" width="145" height="50" rx="8"/>
+      <text class="s-text-b" x="617" y="55" text-anchor="middle">Back-off wait</text>
+      <text class="s-text-s" x="617" y="72" text-anchor="middle">10s, 20s, 40s ... 5m</text>
+      <path class="s-line" d="M160 55 H208" marker-end="url(#arr20)"/>
+      <path class="s-line" d="M320 55 H368" marker-end="url(#arr20)"/>
+      <path class="s-line" d="M500 55 H543" marker-end="url(#arr20)"/>
+      <path class="s-line" d="M617 80 V130 H85 V82" marker-end="url(#arr20)"/>
+      <text class="s-text-s" x="350" y="124" text-anchor="middle">kubelet restarts the container</text>
+    </svg>
+    <figcaption>The restart loop. Status flips between Error, CrashLoopBackOff and Running.</figcaption>
+  </figure>
+
+  <h2>Common causes</h2>
+  <div class="grid-2">
+    <div class="card"><h3>1. Wrong command or arguments</h3><p>The container's start command is wrong, for example <code>python3 app1.py</code> when the file is <code>app.py</code>. It fails instantly every time.</p></div>
+    <div class="card"><h3>2. Failing liveness probe</h3><p>The kubelet checks health; if the check keeps failing it kills and restarts the container.</p></div>
+    <div class="card"><h3>3. Out of memory (OOMKilled)</h3><p>The container uses more memory than its <code>limit</code>, so the system kills it.</p></div>
+    <div class="card"><h3>4. App or config errors</h3><p>Exceptions, a missing environment variable, a missing ConfigMap/Secret, a database that is unreachable, or a volume that does not exist.</p></div>
+  </div>
+
+  <h3>Cause 1: wrong command</h3>
+<pre><code># Dockerfile
+CMD ["python3", "app1.py"]      # file is really app.py
+</code></pre>
+  <p>Status sequence: <code>ContainerCreating</code>, <code>Error</code>, <code>CrashLoopBackOff</code>, <code>Error</code> again ... Fix the Dockerfile (or the <code>command</code>/<code>args</code> in the Pod spec), build and push a new tag (say <code>v2</code>), update the image in the Deployment and apply. The old Pod terminates and the new one runs.</p>
+
+  <h3>Cause 2: liveness probe fails</h3>
+  <p>A <strong>liveness probe</strong> is a health check the kubelet runs: it works like a load balancer's health check. If it fails repeatedly, the kubelet restarts the container, because a hung app can't answer users. (A <strong>readiness probe</strong> is different: it only decides whether the Pod receives traffic.) Real probes usually call an HTTP endpoint such as <code>/health</code>; a 200 means healthy and a 500 or 404 means unhealthy.</p>
+<pre><code>livenessProbe:
+  exec:
+    command: ["cat", "/tmp/healthy"]   # file never exists
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  failureThreshold: 3</code></pre>
+  <p>The container runs, the probe fails, it restarts, repeats. In real life the culprits are a wrong path or port, a probe that starts checking before the app has warmed up (raise <code>initialDelaySeconds</code>, or use a <code>startupProbe</code>), or an app that really is unhealthy.</p>
+
+  <h3>Cause 3: out of memory</h3>
+  <p>In a shared cluster, you protect neighbours with <strong>requests</strong> (what the scheduler reserves) and <strong>limits</strong> (the maximum a container may use). Per-namespace caps are done with a ResourceQuota. If an app leaks memory or the limit is too small, it is killed:</p>
+<pre><code>resources:
+  requests:
+    memory: "64Mi"
+    cpu: "100m"
+  limits:
+    memory: "128Mi"     # container is killed if it goes above this
+    cpu: "250m"</code></pre>
+  <p>CPU is measured in millicores: <code>1000m</code> is one CPU, so <code>25m</code> is 1/40 of a CPU. Going over a CPU limit only <em>slows</em> the app; going over a memory limit <em>kills</em> it. Fix: raise the limit if it is simply too low, or report the leak to the developers (with the logs) if the app should not need that much.</p>
+
+  <h3>Cause 4: errors inside the app or its config</h3>
+  <p>Exceptions at start-up, a required environment variable that is missing or wrong, a Secret or ConfigMap that does not exist, a database that is not reachable. The app logs usually say exactly what happened.</p>
+
+  <h2>The debug flow</h2>
+  <ol class="steps">
+    <li><code>kubectl get pods</code>: see <code>CrashLoopBackOff</code> and the <code>RESTARTS</code> count.</li>
+    <li><code>kubectl logs &lt;pod&gt; --previous</code>: the logs of the <strong>crashed</strong> run. Plain <code>kubectl logs</code> may show the new, empty container. Add <code>-c &lt;container&gt;</code> if the Pod has more than one.</li>
+    <li><code>kubectl describe pod &lt;pod&gt;</code>: look at <strong>Last State</strong> (<code>Reason</code> and <code>Exit Code</code>) and the <strong>Events</strong> (for example "Liveness probe failed").</li>
+    <li>Match the evidence to a cause, fix the manifest or image, and apply.</li>
+  </ol>
+<pre><code>kubectl get pods
+kubectl logs my-app-5d9c7-xk2lp --previous
+kubectl describe pod my-app-5d9c7-xk2lp
+
+# in describe, look for:
+    Last State:     Terminated
+      Reason:       OOMKilled
+      Exit Code:    137</code></pre>
+  <div class="table-wrap"><table>
+    <tr><th>Clue</th><th>Points to</th></tr>
+    <tr><td>Reason <code>OOMKilled</code>, exit code 137</td><td>Memory limit too low or a memory leak</td></tr>
+    <tr><td>Events: "Liveness probe failed"</td><td>Probe path, port or timing wrong; or app unhealthy</td></tr>
+    <tr><td>Exit code 1 and a stack trace in <code>--previous</code> logs</td><td>Application error or bad configuration</td></tr>
+    <tr><td>Exit code 127 or "executable file not found" or "can't open file"</td><td>Wrong command or file name</td></tr>
+  </table></div>
+
+  <div class="demo" id="demo-clbo">
+    <div class="demo-head">Try it: the back-off clock</div>
+    <div class="demo-body">
+      <p>Each restart waits longer than the last, doubling until 5 minutes. Drag the slider to see how long Kubernetes waits before restart number N.</p>
+      <div class="row"><label>Restart number: <b id="cb-n">1</b> <input type="range" id="cb-r" min="1" max="10" value="1" aria-label="Restart number"></label></div>
+      <div class="bars" id="cb-bars"></div>
+      <div class="output" id="cb-out"></div>
+    </div>
+  </div>
+
+  <div class="callout interview"><span class="callout-title">Interview angle</span>"Pod is in CrashLoopBackOff. How do you debug?" Say: <code>kubectl logs --previous</code> for the crashed run, <code>kubectl describe</code> for exit code, reason and events; then name the usual suspects: wrong command, failing probe, OOMKilled from low limits, app or config errors. Explain the back-off (10s doubling to 5 minutes).</div>
+
+  <h2>Check yourself</h2>
+  <div class="quiz" data-answer="2">
+    <div class="q">A container keeps restarting. Which command shows the output of the run that crashed?</div>
+    <div class="opts"><button>kubectl get pods -w</button><button>kubectl logs &lt;pod&gt; (no flags)</button><button>kubectl logs &lt;pod&gt; --previous</button></div>
+    <div class="explain">--previous shows the logs of the last terminated container, which holds the real error.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q"><code>describe pod</code> shows Last State Reason: OOMKilled, Exit Code 137. What does it mean?</div>
+    <div class="opts"><button>The container went over its memory limit and was killed</button><button>The image could not be pulled</button><button>The liveness probe path is wrong</button></div>
+    <div class="explain">Exceeding a memory limit gets the container killed. Raise the limit, or fix the leak.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">What is the maximum wait between restarts in the back-off?</div>
+    <div class="opts"><button>10 seconds</button><button>5 minutes</button><button>1 hour</button></div>
+    <div class="explain">The delay starts at 10s and doubles: 20s, 40s ... and is capped at 5 minutes.</div>
+  </div>
+
+  <section class="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li>CrashLoopBackOff means the container crashes repeatedly and Kubernetes restarts it with growing delays (10s up to 5 min).</li>
+      <li>It has many causes: wrong command, failing liveness probe, OOMKilled, app or config errors.</li>
+      <li>Debug with <code>kubectl logs --previous</code> and <code>kubectl describe pod</code> (Last State, exit code, Events).</li>
+      <li>Memory over the limit kills the container; CPU over the limit only slows it.</li>
+      <li>Tell a liveness probe (restart me) from a readiness probe (send me traffic) when you diagnose.</li>
+    </ul>
+  </section>
+</main>
+<script>
+(function () {
+  var r = document.getElementById("cb-r"), n = document.getElementById("cb-n"), bars = document.getElementById("cb-bars"), out = document.getElementById("cb-out");
+  function fmt(s) { return s >= 60 ? (s / 60) + " min" : s + " s"; }
+  function draw() {
+    var N = +r.value, html = "", total = 0, i, d;
+    n.textContent = N;
+    for (i = 1; i <= N; i++) {
+      d = Math.min(10 * Math.pow(2, i - 1), 300);
+      total += d;
+      html += '<div class="bar-row"><span class="lab">restart ' + i + '</span><span class="bar" style="width:' + Math.max(2, d / 300 * 55) + '%"></span><span class="val">' + fmt(d) + "</span></div>";
+    }
+    bars.innerHTML = html;
+    d = Math.min(10 * Math.pow(2, N - 1), 300);
+    out.className = "output";
+    out.innerHTML = "Wait before restart " + N + ": <b>" + fmt(d) + "</b>" + (d === 300 ? " (the cap)" : "") + ". Total waiting so far: <b>" + fmt(total) + "</b>.";
+  }
+  r.addEventListener("input", draw);
+  draw();
+})();
+</script>
+</body>
+</html>
