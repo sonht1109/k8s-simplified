@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Monitoring: Prometheus &amp; Grafana · Kubernetes Simplified</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/site.js"></script>
+<style>
+  .bars { display: flex; align-items: flex-end; gap: 4px; height: 120px; margin: 10px 0; border-bottom: 2px solid var(--border); position: relative; }
+  .bar { flex: 1; min-width: 0; background: var(--blue); border-radius: 3px 3px 0 0; }
+  .bar.hot { background: var(--red); }
+  .thr { position: absolute; left: 0; right: 0; border-top: 2px dashed var(--orange, var(--red)); pointer-events: none; }
+  .slider-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
+  .slider-row input[type=range] { flex: 1; min-width: 140px; }
+</style>
+</head>
+<body data-page="14">
+<main class="wrap">
+  <header class="page-head">
+    <h1>Monitoring: Prometheus &amp; Grafana</h1>
+    <p class="lead">When something goes wrong in a cluster, you want to find out before your users do. Prometheus collects numbers (metrics) from the cluster, Grafana turns them into dashboards, and Alertmanager tells you when something is off.</p>
+  </header>
+
+  <h2>Why monitor?</h2>
+  <p>With one small cluster and one engineer, you might just look around by hand. Reality quickly gets bigger:</p>
+  <ul>
+    <li>Several teams share a cluster, and one reports "my service was unreachable for a minute". How do you find out what happened?</li>
+    <li>Dev, staging and production each have a cluster, and the count keeps growing.</li>
+    <li>Questions like "do all Deployments have their expected replicas?" or "is the API server slow?" need data, not guesses.</li>
+  </ul>
+  <p>A monitoring platform records numbers over time so you can look at history, spot trends and get alerted. <strong>Prometheus</strong> is the standard open-source choice for Kubernetes (it started at SoundCloud and is now a community project).</p>
+
+  <h2>How Prometheus works</h2>
+  <ul>
+    <li><strong>Metrics</strong> are numbers with a name and labels, such as CPU used or HTTP requests served, sampled over time.</li>
+    <li>Prometheus <strong>pulls</strong> (called "scraping") metrics at regular intervals from HTTP endpoints, usually <code>/metrics</code>.</li>
+    <li>It stores them in a <strong>time-series database</strong>: each value is saved with its timestamp, on local disk.</li>
+    <li>You query the data with <strong>PromQL</strong>, either in Prometheus' own web UI or via its HTTP API (so tools like curl or Grafana can use it).</li>
+    <li>Rules can raise <strong>alerts</strong>, which Prometheus sends to <strong>Alertmanager</strong>. That component groups them and notifies Slack, email or similar.</li>
+  </ul>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 700 280" role="img" aria-label="Prometheus scrapes metrics from the Kubernetes API server, kube-state-metrics and app endpoints, stores them in a time-series database, sends alerts to Alertmanager, and Grafana queries it for dashboards.">
+      <defs><marker id="arr14" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" style="fill:var(--text-2)"/></marker></defs>
+      <rect class="s-box" x="10" y="25" width="190" height="50" rx="8"/>
+      <text class="s-text" x="105" y="55" text-anchor="middle">API server /metrics</text>
+      <rect class="s-box" x="10" y="95" width="190" height="50" rx="8"/>
+      <text class="s-text" x="105" y="125" text-anchor="middle">kube-state-metrics</text>
+      <rect class="s-box" x="10" y="165" width="190" height="50" rx="8"/>
+      <text class="s-text" x="105" y="195" text-anchor="middle">Your app /metrics</text>
+      <rect class="s-orange-soft" x="270" y="60" width="170" height="130" rx="10"/>
+      <text class="s-text-b" x="355" y="88" text-anchor="middle">Prometheus</text>
+      <text class="s-text-s" x="355" y="118" text-anchor="middle">scrapes + stores</text>
+      <text class="s-text-s" x="355" y="136" text-anchor="middle">time-series DB</text>
+      <text class="s-text-s" x="355" y="154" text-anchor="middle">PromQL, rules</text>
+      <rect class="s-red" x="520" y="25" width="165" height="55" rx="8"/>
+      <text class="s-text-b" x="602" y="57" text-anchor="middle">Alertmanager</text>
+      <rect class="s-green" x="520" y="170" width="165" height="55" rx="8"/>
+      <text class="s-text-b" x="602" y="202" text-anchor="middle">Grafana</text>
+      <text class="s-text-s" x="602" y="100" text-anchor="middle">Slack / email</text>
+      <text class="s-text-s" x="602" y="245" text-anchor="middle">dashboards</text>
+      <path class="s-line" d="M270 100 H235 V52 H202" marker-end="url(#arr14)"/>
+      <path class="s-line" d="M270 125 H202" marker-end="url(#arr14)"/>
+      <path class="s-line" d="M270 150 H215 V190 H202" marker-end="url(#arr14)"/>
+      <text class="s-text-s" x="236" y="262">Prometheus pulls (scrapes)</text>
+      <path class="s-line-o" d="M440 90 L518 60" marker-end="url(#arr14)"/>
+      <path class="s-line-o" d="M518 195 L440 160" marker-end="url(#arr14)"/>
+      <text class="s-text-s" x="478" y="130" text-anchor="middle">alerts</text>
+      <text class="s-text-s" x="480" y="188" text-anchor="middle">queries</text>
+    </svg>
+    <figcaption>Prometheus pulls metrics, keeps history, raises alerts. Grafana asks Prometheus for data to draw.</figcaption>
+  </figure>
+
+  <h3>Where do the metrics come from?</h3>
+  <ul>
+    <li>The Kubernetes <strong>API server</strong> exposes metrics about itself and the cluster out of the box (see <a href="02-architecture.html">Lesson 2</a>).</li>
+    <li><strong>kube-state-metrics</strong> is a small add-on that turns object state into metrics: how many replicas does each Deployment want versus have, which Pods are pending, and so on. The API server alone does not give you that.</li>
+    <li><strong>Exporters</strong> are helper programs that expose metrics for things that do not speak Prometheus themselves (for example <code>node-exporter</code> for machine CPU and memory).</li>
+    <li><strong>Your own apps</strong> can expose a <code>/metrics</code> endpoint using a Prometheus client library. You then tell Prometheus to scrape it by adding a scrape target in its configuration.</li>
+  </ul>
+
+  <h2>Grafana: making metrics readable</h2>
+  <p>PromQL results are raw numbers or JSON, which is hard for a manager (or you at 3 a.m.) to read. <strong>Grafana</strong> connects to Prometheus as a <em>data source</em> and draws charts, gauges and tables. It supports many other data sources too. Dashboards are built from PromQL queries, but you do not have to write them yourself: Grafana.com offers ready-made dashboards you can import by ID.</p>
+
+  <h2>Hands-on: install both with Helm</h2>
+  <p>You need any cluster (a local one such as minikube or kind works; see <a href="26-kind.html">Lesson 26</a>) and Helm. This lesson only uses Helm commands; how Helm works is explained in <a href="27-helm.html">Lesson 27</a>.</p>
+  <ol class="steps">
+    <li><strong>Install Prometheus.</strong> Always run <code>helm repo update</code> first so you get a current chart version.
+<pre><code>helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+helm install prometheus prometheus-community/prometheus
+kubectl get pods</code></pre>
+      The chart installs the Prometheus server, Alertmanager, kube-state-metrics and node exporters. Read the notes Helm prints at the end; they show how to reach the server.</li>
+    <li><strong>Check the Services.</strong> They are all type ClusterIP (internal only):
+<pre><code>kubectl get svc</code></pre></li>
+    <li><strong>Open the Prometheus UI.</strong> For a quick lab, expose it as a NodePort (<a href="08-services-deep-dive.html">Services</a>); or just port-forward:
+<pre><code>kubectl expose service prometheus-server --type=NodePort \
+  --target-port=9090 --name=prometheus-server-ext
+minikube service prometheus-server-ext      # or use node IP + NodePort
+
+# alternative, works anywhere
+kubectl port-forward svc/prometheus-server 9090:80</code></pre></li>
+    <li><strong>Install Grafana</strong> and get its generated admin password:
+<pre><code>helm repo add grafana https://grafana.github.io/helm-charts
+helm repo update
+helm install grafana grafana/grafana
+
+kubectl get secret grafana -o jsonpath="{.data.admin-password}" | base64 --decode; echo</code></pre>
+      The username is <code>admin</code>. (Yes, the password sits in a Secret; see <a href="13-configmaps-secrets-project.html">Lesson 13</a>.)</li>
+    <li><strong>Reach Grafana</strong> the same way:
+<pre><code>kubectl port-forward svc/grafana 3000:80</code></pre></li>
+    <li><strong>Add the data source.</strong> In Grafana go to <em>Connections, Data sources, Add data source, Prometheus</em>. For the URL use the in-cluster address <code>http://prometheus-server</code> (same namespace) and press <em>Save &amp; test</em>.</li>
+    <li><strong>Import a dashboard.</strong> Go to <em>Dashboards, New, Import</em>, enter a dashboard ID from Grafana.com (the demo used <code>3662</code>, a general Prometheus overview), pick your Prometheus data source and import. Hover over any panel to see the query behind it, which is a great way to learn PromQL.</li>
+  </ol>
+  <div class="callout warn"><span class="callout-title">Watch out</span>Exposing Prometheus and Grafana with NodePort is fine for a lab only. In real environments put them behind an <a href="09-ingress-tls.html">Ingress</a> with authentication.</div>
+  <div class="callout tip"><span class="callout-title">Tip</span>Many teams install the whole stack with the <strong>kube-prometheus-stack</strong> chart, which uses an operator (CRDs plus a controller, see <a href="12-crds-custom-controllers.html">Lesson 12</a>) to manage Prometheus, Alertmanager and Grafana together. Operators can also handle upgrades for you.</div>
+
+  <h2>A taste of PromQL</h2>
+<pre><code># is each target up? (1 = yes, 0 = no)
+up
+
+# Deployments that don't have all their replicas
+kube_deployment_status_replicas_available &lt; kube_deployment_spec_replicas
+
+# per-second HTTP request rate over 5 minutes
+rate(http_requests_total[5m])</code></pre>
+  <p>The first two work with the setup above; the third needs an app that exports <code>http_requests_total</code>.</p>
+
+  <h2>Alerts</h2>
+  <p>Dashboards need someone watching. An <strong>alert rule</strong> lets Prometheus watch for you: "if this expression stays true for N minutes, fire an alert". The <code>for</code> part avoids waking people up over a one-second spike. Alertmanager then sends the notification.</p>
+<pre><code>groups:
+- name: example
+  rules:
+  - alert: HighMemory
+    expr: container_memory_working_set_bytes &gt; 500 * 1024 * 1024
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Container is using more than 500 MB"</code></pre>
+
+  <div class="demo" id="demo-alert">
+    <div class="demo-head">Try it: scrape and alert</div>
+    <div class="demo-body">
+      <p>Each press of <b>Scrape</b> adds a new sample (a random CPU %). The alert fires only if the last <i>N</i> samples are all above the threshold, just like <code>for:</code> in a rule.</p>
+      <div class="slider-row"><label for="al-thr">Threshold: <b id="al-thr-v">70</b>%</label><input type="range" id="al-thr" min="30" max="95" value="70"></div>
+      <div class="slider-row"><label for="al-for">Must hold for: <b id="al-for-v">3</b> scrapes</label><input type="range" id="al-for" min="1" max="6" value="3"></div>
+      <div class="bars" id="al-bars" aria-label="Recent samples"><div class="thr" id="al-line"></div></div>
+      <div class="row"><button class="btn primary" id="al-scrape">Scrape</button><button class="btn" id="al-spike">Scrape (high load)</button><button class="btn" id="al-reset">Reset</button></div>
+      <div class="output" id="al-out">Press Scrape.</div>
+    </div>
+  </div>
+
+  <h2>Check yourself</h2>
+  <div class="quiz" data-answer="1">
+    <div class="q">How does Prometheus get its data?</div>
+    <div class="opts"><button>Apps push data to it via Grafana</button><button>It pulls (scrapes) metrics from HTTP endpoints at intervals</button><button>It reads container logs</button></div>
+    <div class="explain">Prometheus scrapes <code>/metrics</code> endpoints and stores samples in its time-series database.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">What is the role of Grafana?</div>
+    <div class="opts"><button>Store metrics on disk</button><button>Send alerts to Slack</button><button>Visualize data from sources such as Prometheus</button></div>
+    <div class="explain">Prometheus stores and queries; Alertmanager notifies; Grafana draws dashboards.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">You want to know whether Deployments have their desired replica count. Which component supplies that data?</div>
+    <div class="opts"><button>kube-state-metrics</button><button>Alertmanager</button><button>Grafana data source settings</button></div>
+    <div class="explain">kube-state-metrics converts the state of Kubernetes objects into metrics.</div>
+  </div>
+
+  <section class="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li>Prometheus scrapes metrics, stores them as time series and answers PromQL queries.</li>
+      <li>Metrics come from the API server, kube-state-metrics, exporters and your own apps' <code>/metrics</code> endpoints.</li>
+      <li>Alertmanager receives alerts from Prometheus and notifies Slack, email and others.</li>
+      <li>Grafana uses Prometheus as a data source; import ready-made dashboards by ID to start fast.</li>
+      <li>Helm makes installing the stack quick; use Ingress and authentication outside of labs.</li>
+    </ul>
+  </section>
+</main>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var data = [];
+  var MAX = 12;
+  function render() {
+    var thr = +$("al-thr").value, need = +$("al-for").value;
+    $("al-thr-v").textContent = thr;
+    $("al-for-v").textContent = need;
+    var box = $("al-bars");
+    var html = '<div class="thr" id="al-line" style="bottom:' + thr * 1.2 + 'px"></div>';
+    data.forEach(function (v) {
+      html += '<div class="bar' + (v > thr ? " hot" : "") + '" style="height:' + v * 1.2 + 'px" title="' + v + '%"></div>';
+    });
+    box.innerHTML = html;
+    var out = $("al-out");
+    if (!data.length) { out.className = "output"; out.textContent = "Press Scrape."; return; }
+    var run = 0;
+    for (var i = data.length - 1; i >= 0 && data[i] > thr; i--) run++;
+    if (run >= need) {
+      out.className = "output bad";
+      out.textContent = "FIRING: " + run + " samples in a row above " + thr + "%. Prometheus sends the alert to Alertmanager.";
+    } else if (run > 0) {
+      out.className = "output";
+      out.textContent = "PENDING: " + run + " of " + need + " samples above " + thr + "%. Not firing yet.";
+    } else {
+      out.className = "output ok";
+      out.textContent = "OK: latest sample (" + data[data.length - 1] + "%) is below the threshold.";
+    }
+  }
+  function add(v) { data.push(v); if (data.length > MAX) data.shift(); render(); }
+  $("al-scrape").addEventListener("click", function () { add(20 + Math.floor(Math.random() * 60)); });
+  $("al-spike").addEventListener("click", function () { add(80 + Math.floor(Math.random() * 20)); });
+  $("al-reset").addEventListener("click", function () { data = []; render(); });
+  $("al-thr").addEventListener("input", render);
+  $("al-for").addEventListener("input", render);
+  render();
+})();
+</script>
+</body>
+</html>
