@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Services: Discovery &amp; Load Balancing · Kubernetes Simplified</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/site.js"></script>
+<style>
+  .pod-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+  .pod { border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; background: var(--surface-2); font: 13px/1.4 var(--mono); min-width: 120px; }
+  .pod b { display: block; font-family: inherit; }
+  .pod.nolabel { opacity: .55; }
+  .pod .hits { color: var(--text-2); }
+  .ep-line { font: 13px/1.5 var(--mono); margin: 6px 0; word-break: break-word; }
+</style>
+</head>
+<body data-page="06">
+<main class="wrap">
+  <header class="page-head">
+    <h1>Services: Discovery &amp; Load Balancing</h1>
+    <p class="lead">Pods come and go, and every new Pod gets a new IP address. A Service gives your application one stable address, finds the right Pods by label, and spreads traffic across them. You'll see why it exists and how it works.</p>
+  </header>
+
+  <div class="xref-box"><div>This lesson builds on <a href="05-deployments-replicasets.html">Lesson 5: Deployments &amp; ReplicaSets</a> (self-healing and replicas) and <a href="04-pods.html">Lesson 4: Pods</a> (labels on Pods).</div></div>
+
+  <h2>The problem: Pod IPs keep changing</h2>
+  <p>A Deployment keeps, say, three replicas of your app running. Each Pod gets its own IP address from the cluster network, for example <code>172.16.3.4</code>, <code>172.16.3.5</code> and <code>172.16.3.6</code>.</p>
+  <p>Now imagine you give those three IPs to three other teams that need to call your app. Then one Pod crashes. The ReplicaSet does its job and starts a replacement, but the replacement is a <em>new</em> Pod with a <em>new</em> IP, maybe <code>172.16.3.8</code>.</p>
+  <ul>
+    <li>From your side everything looks healthy: three Pods are running.</li>
+    <li>From the other team's side the app is "down", because they are still calling <code>172.16.3.4</code>.</li>
+  </ul>
+  <p>Nobody is wrong. Pod IPs are <strong>dynamic</strong>: they are handed out when a Pod is created and are gone when it dies. Self-healing alone is not enough; you need something stable in front of the Pods.</p>
+  <p>The real world works the same way. When you open google.com, Google does not tell you "use server 100.64.2.7". You get one name, and a load balancer behind it decides which server answers. Kubernetes gives you that with a <strong>Service</strong> (short name: <code>svc</code>).</p>
+
+  <h2>What a Service does for you</h2>
+  <p>A Service is a stable front door for a group of Pods. It gives you three things:</p>
+  <div class="grid-2">
+    <div class="card"><h3>1. Load balancing</h3><p>Requests to the Service are spread across all healthy Pods behind it, so no single replica gets overloaded.</p></div>
+    <div class="card"><h3>2. Service discovery</h3><p>The Service finds its Pods by <strong>label</strong>, not by IP. New or replaced Pods are picked up automatically.</p></div>
+    <div class="card"><h3>3. Exposure</h3><p>Depending on its <em>type</em>, a Service can be reached only inside the cluster, from the node network, or from the internet.</p></div>
+    <div class="card"><h3>Bonus: a stable name</h3><p>Every Service gets a fixed IP and a DNS name, so other apps can call <code>payments</code> instead of an IP.</p></div>
+  </div>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 700 270" role="img" aria-label="Three clients call one Service. The Service forwards requests to three Pods that all carry the label app equals payments.">
+      <defs><marker id="arr6" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" style="fill:var(--text-2)"/></marker></defs>
+      <rect class="s-box2" x="10" y="30" width="110" height="46" rx="8"/><text class="s-text-b" x="65" y="58" text-anchor="middle">Team A</text>
+      <rect class="s-box2" x="10" y="112" width="110" height="46" rx="8"/><text class="s-text-b" x="65" y="140" text-anchor="middle">Team B</text>
+      <rect class="s-box2" x="10" y="194" width="110" height="46" rx="8"/><text class="s-text-b" x="65" y="222" text-anchor="middle">Team C</text>
+      <path class="s-line" d="M120 53 L218 120" marker-end="url(#arr6)"/>
+      <path class="s-line" d="M120 135 H218" marker-end="url(#arr6)"/>
+      <path class="s-line" d="M120 217 L218 150" marker-end="url(#arr6)"/>
+      <rect class="s-orange" x="220" y="95" width="150" height="80" rx="10"/>
+      <text class="s-text-ink" x="295" y="128" text-anchor="middle">Service</text>
+      <text class="s-text-ink" x="295" y="150" text-anchor="middle">payments</text>
+      <text class="s-text-s" x="295" y="195" text-anchor="middle">stable IP + DNS name</text>
+      <path class="s-line-o" d="M370 120 L478 55" marker-end="url(#arr6)"/>
+      <path class="s-line-o" d="M370 135 H478" marker-end="url(#arr6)"/>
+      <path class="s-line-o" d="M370 150 L478 215" marker-end="url(#arr6)"/>
+      <rect class="s-blue" x="480" y="28" width="200" height="54" rx="8"/><text class="s-text-b" x="580" y="50" text-anchor="middle">Pod 172.16.3.4</text><text class="s-text-s" x="580" y="69" text-anchor="middle">app=payments</text>
+      <rect class="s-blue" x="480" y="108" width="200" height="54" rx="8"/><text class="s-text-b" x="580" y="130" text-anchor="middle">Pod 172.16.3.5</text><text class="s-text-s" x="580" y="149" text-anchor="middle">app=payments</text>
+      <rect class="s-blue" x="480" y="188" width="200" height="54" rx="8"/><text class="s-text-b" x="580" y="210" text-anchor="middle">Pod 172.16.3.8 (new)</text><text class="s-text-s" x="580" y="229" text-anchor="middle">app=payments</text>
+    </svg>
+    <figcaption>Clients only know the Service. Pods behind it can die and be replaced; the label stays the same.</figcaption>
+  </figure>
+
+  <h2>Service discovery with labels and selectors</h2>
+  <p>You might ask: if the Service forwards to Pod IPs, doesn't it suffer from the same changing-IP problem? It would, if it tracked IPs by hand. Instead it uses <strong>labels</strong> and a <strong>selector</strong>.</p>
+  <ul>
+    <li>A <strong>label</strong> is a key/value tag on an object, such as <code>app: payments</code>.</li>
+    <li>A <strong>selector</strong> is a question: "give me every Pod that has this label".</li>
+  </ul>
+  <p>When the Deployment creates Pods, its Pod template stamps the same label on every Pod. When a Pod dies, the ReplicaSet creates a replacement from the same template, so the replacement carries the <em>same label</em> even though its IP is new. The Service only cares about the label, so it finds the new Pod on its own. Scale from 2 to 20 Pods and the Service follows, with no changes to the Service.</p>
+  <pre><code># Deployment: stamps the label on every Pod it creates
+spec:
+  selector:
+    matchLabels:
+      app: payments
+  template:
+    metadata:
+      labels:
+        app: payments        # &lt;- the Pod label
+---
+# Service: selects Pods that carry that label
+apiVersion: v1
+kind: Service
+metadata:
+  name: payments
+spec:
+  selector:
+    app: payments            # &lt;- must match the Pod label
+  ports:
+    - port: 80
+      targetPort: 8000</code></pre>
+  <div class="callout warn"><span class="callout-title">Watch out</span>The selector must match the labels in the <strong>Pod template</strong> (<code>spec.template.metadata.labels</code>), not just the Deployment's own labels. A one-character typo means the Service selects nothing and traffic goes nowhere, with no error message.</div>
+
+  <h2>Under the hood: endpoints and kube-proxy</h2>
+  <p>Two pieces make the magic work:</p>
+  <ol class="steps">
+    <li><strong>Endpoints.</strong> Kubernetes continuously watches for Pods that match the selector (and are Ready) and keeps a list of their IP:port pairs. This list is stored as <em>Endpoints</em> / <em>EndpointSlice</em> objects. You can see it with <code>kubectl get endpoints payments</code>. A Pod that dies drops off the list; a new Pod is added.</li>
+    <li><strong>kube-proxy.</strong> This component runs on every node (see <a href="02-architecture.html">Lesson 2: Architecture</a>). It watches Services and Endpoints and writes network rules on the node (by default <code>iptables</code> rules) that say "traffic to the Service IP should go to one of these Pod IPs".</li>
+  </ol>
+  <p>The Service IP, called the <strong>ClusterIP</strong>, is virtual. No network card owns it; the node's rules rewrite the destination to a real Pod. The balancing is simple (roughly round-robin or random), not "smart". Features like sticky sessions or path routing need something more, which is why <a href="09-ingress-tls.html">Ingress</a> exists.</p>
+  <p>Inside the cluster, Services also get a DNS name, using the pattern <code>&lt;service&gt;.&lt;namespace&gt;.svc.cluster.local</code>. From a Pod in the same namespace you can just call <code>http://payments</code>; from another namespace use <code>payments.default</code> or the full name.</p>
+
+  <div class="demo" id="demo-svc">
+    <div class="demo-head">Try it: Pods come and go, the Service keeps working</div>
+    <div class="demo-body">
+      <p>Three Pods carry the label <code>app=payments</code>. Kill a Pod and watch its IP change. Then send requests through the Service. Switch the selector to a typo to see what discovery failure looks like.</p>
+      <div class="row">
+        <label for="sv-sel">Service selector:&nbsp;</label>
+        <select id="sv-sel" aria-label="Service selector">
+          <option value="payments">app=payments (correct)</option>
+          <option value="payment">app=payment (typo)</option>
+        </select>
+      </div>
+      <div class="pod-row" id="sv-pods" aria-live="polite"></div>
+      <div class="row">
+        <button class="btn" id="sv-kill">Kill a random Pod</button>
+        <button class="btn" id="sv-scale">Scale up (+1 Pod)</button>
+        <button class="btn primary" id="sv-send">Send 6 requests</button>
+      </div>
+      <div class="ep-line" id="sv-ep"></div>
+      <div class="output" id="sv-out">Press <b>Send 6 requests</b>.</div>
+    </div>
+  </div>
+
+  <h2>Service types at a glance</h2>
+  <p>Every Service has a ClusterIP. The <code>type</code> field decides who else can reach it. Each type builds on the previous one. The next lesson, <a href="08-services-deep-dive.html">Services Deep Dive</a>, runs all of them hands-on.</p>
+  <div class="table-wrap"><table>
+    <tr><th>Type</th><th>Who can reach it</th><th>Typical use</th></tr>
+    <tr><td><code>ClusterIP</code> (default)</td><td>Only things inside the cluster</td><td>Internal calls, e.g. checkout to payments</td></tr>
+    <tr><td><code>NodePort</code></td><td>Anyone who can reach the node IPs, on a port in 30000-32767</td><td>Internal company users, quick tests</td></tr>
+    <tr><td><code>LoadBalancer</code></td><td>Anyone on the internet, via a cloud load balancer</td><td>Public apps on a cloud provider</td></tr>
+  </table></div>
+  <div class="callout analogy"><span class="callout-title">Think of it like…</span>A company's front desk. Callers dial one number (the Service) and the receptionist connects them to whichever employee (Pod) is free. Employees can quit and be replaced, and the number never changes. <em>ClusterIP</em> is an internal extension, <em>NodePort</em> is a number for people inside the building, and <em>LoadBalancer</em> is a public phone number.</div>
+  <div class="callout interview"><span class="callout-title">Interview angle</span>"Why do we need Services?" Pod IPs are dynamic, so you need stable access (discovery), traffic spread across replicas (load balancing), and a way to expose the app (ClusterIP / NodePort / LoadBalancer). Mention that discovery uses labels and selectors, and kube-proxy programs the rules.</div>
+
+  <h2>Check yourself</h2>
+  <div class="quiz" data-answer="2">
+    <div class="q">How does a Service keep track of which Pods to send traffic to?</div>
+    <div class="opts"><button>It stores each Pod's IP address by hand</button><button>It asks the Deployment for a list every minute</button><button>It selects Pods by label, and the endpoint list updates automatically</button></div>
+    <div class="explain">Pods are matched by label via the selector. Kubernetes keeps the endpoint list up to date as Pods are created and removed.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">You create a Service but <code>kubectl get endpoints</code> shows no addresses. What is the most likely cause?</div>
+    <div class="opts"><button>The Service selector does not match the Pod labels</button><button>The Service type should be LoadBalancer</button><button>kube-proxy is not installed on the master</button></div>
+    <div class="explain">An empty endpoint list means no Ready Pod matched the selector. Check for typos between the Service selector and the Pod template labels.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">Which Service type is the default, and who can reach it?</div>
+    <div class="opts"><button>NodePort, anyone on the node network</button><button>ClusterIP, only clients inside the cluster</button><button>LoadBalancer, anyone on the internet</button></div>
+    <div class="explain">If you do not set <code>type</code>, you get ClusterIP, which is reachable only from inside the cluster.</div>
+  </div>
+
+  <section class="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li>Pod IPs change whenever a Pod is replaced, so never hand them out; put a <strong>Service</strong> in front.</li>
+      <li>A Service gives you <strong>load balancing</strong>, <strong>service discovery</strong> and a way to <strong>expose</strong> the app, plus a stable IP and DNS name.</li>
+      <li>Discovery works through <strong>labels and selectors</strong>, so replacements and new replicas are found automatically.</li>
+      <li><strong>Endpoints</strong> list the matching Pod IPs, and <strong>kube-proxy</strong> turns that into network rules on each node.</li>
+      <li>Types: <code>ClusterIP</code> (inside), <code>NodePort</code> (node network), <code>LoadBalancer</code> (internet via cloud).</li>
+    </ul>
+  </section>
+</main>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var pods = [], seq = 4;
+  function ip() { return "172.16.3." + (seq++); }
+  function reset() { pods = [{ ip: ip(), hits: 0 }, { ip: ip(), hits: 0 }, { ip: ip(), hits: 0 }]; }
+  function matching() { return $("sv-sel").value === "payments" ? pods : []; }
+  function render() {
+    var ok = $("sv-sel").value === "payments";
+    $("sv-pods").innerHTML = pods.map(function (p) {
+      return '<div class="pod"><b>Pod ' + p.ip + '</b>app=payments<br><span class="hits">requests: ' + p.hits + '</span></div>';
+    }).join("");
+    var eps = matching();
+    $("sv-ep").innerHTML = "Endpoints of Service: " + (eps.length ? eps.map(function (p) { return p.ip + ":8000"; }).join(", ") : "<b style=\"color:var(--red)\">none</b>");
+    if (!ok) { $("sv-out").className = "output bad"; $("sv-out").innerHTML = "Selector <code>app=payment</code> matches no Pod, so the endpoint list is empty."; }
+  }
+  $("sv-kill").addEventListener("click", function () {
+    var i = Math.floor(Math.random() * pods.length), old = pods[i].ip;
+    pods[i] = { ip: ip(), hits: 0 };
+    render();
+    $("sv-out").className = "output";
+    $("sv-out").innerHTML = "Pod " + old + " died. The ReplicaSet started a replacement with a <b>new IP (" + pods[i].ip + ")</b> and the same label. Anyone who saved the old IP is stuck; the Service is not.";
+  });
+  $("sv-scale").addEventListener("click", function () {
+    if (pods.length >= 6) return;
+    pods.push({ ip: ip(), hits: 0 });
+    render();
+    $("sv-out").className = "output";
+    $("sv-out").innerHTML = "A new Pod appeared with the label <code>app=payments</code>. The Service added it to its endpoints automatically.";
+  });
+  $("sv-send").addEventListener("click", function () {
+    var eps = matching();
+    if (!eps.length) { render(); $("sv-out").className = "output bad"; $("sv-out").innerHTML = "<b>Connection refused / timeout.</b> No endpoints, so there is nowhere to send traffic. Fix the selector."; return; }
+    var start = Math.floor(Math.random() * eps.length);
+    for (var i = 0; i < 6; i++) eps[(start + i) % eps.length].hits++;
+    render();
+    $("sv-out").className = "output ok";
+    $("sv-out").innerHTML = "<b>6 requests sent to one Service address.</b> They were spread across " + eps.length + " Pods (see the counters).";
+  });
+  $("sv-sel").addEventListener("change", function () { render(); if ($("sv-sel").value === "payments") { $("sv-out").className = "output"; $("sv-out").innerHTML = "Selector fixed. Discovery works again."; } });
+  reset(); render();
+})();
+</script>
+</body>
+</html>
