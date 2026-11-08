@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ingress, TLS &amp; Controllers · Kubernetes Simplified</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/site.js"></script>
+<style>
+  .rt-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 8px 0; }
+  .rt-grid label { font-size: 13px; display: block; }
+  .rt-grid select, .rt-grid input { width: 100%; }
+  .rule-tbl { font: 13px/1.5 var(--mono); margin: 8px 0; }
+  .rule-tbl div { padding: 3px 6px; border-radius: 4px; }
+  .rule-tbl .hit { background: var(--surface-2); outline: 2px solid var(--green); }
+</style>
+</head>
+<body data-page="09">
+<main class="wrap">
+  <header class="page-head">
+    <h1>Ingress, TLS &amp; Controllers</h1>
+    <p class="lead">Ingress lets many apps share one entry point and routes traffic by hostname and URL path, with HTTPS handled in one place. You'll learn why it was invented, how the Ingress resource and the ingress controller split the work, and the three ways to handle TLS.</p>
+  </header>
+
+  <div class="xref-box"><div>Ingress builds on Services. If NodePort, LoadBalancer or kube-proxy are new to you, read <a href="06-services-intro.html">Lesson 6</a> and <a href="08-services-deep-dive.html">Lesson 8</a> first.</div></div>
+
+  <h2>Why Services alone are not enough</h2>
+  <p>Services already expose apps, so why does Ingress exist? Teams that moved from virtual machines to Kubernetes hit two problems.</p>
+  <div class="grid-2">
+    <div class="card"><h3>Problem 1: too few features</h3><p>On VMs, people used load balancers like NGINX, HAProxy or F5 with rich features: path-based and host-based routing, sticky sessions, ratio-based balancing, allow/deny lists, HTTPS, a web application firewall. A Service only offers a simple, even spread of connections (the kind of balancing kube-proxy does), nothing more.</p></div>
+    <div class="card"><h3>Problem 2: cost</h3><p>Exposing a Service as <code>LoadBalancer</code> usually gives each one its own cloud load balancer and static public IP, billed separately. With 200 services that is 200 bills. On VMs, you ran <em>one</em> load balancer with one IP and routed to many apps behind it.</p></div>
+  </div>
+  <p>Kubernetes' answer is the <strong>Ingress</strong>: one entry point, many routing rules.</p>
+  <div class="callout interview"><span class="callout-title">Interview angle</span>"Why Ingress instead of LoadBalancer Services?" Two reasons: (1) advanced HTTP routing and TLS features that Services lack, and (2) one shared load balancer and IP instead of one paid load balancer per Service.</div>
+
+  <h2>Two pieces: the resource and the controller</h2>
+  <p>Ingress is split in two, on purpose.</p>
+  <ul>
+    <li><strong>Ingress resource</strong>: a YAML object holding <em>rules</em>, such as "requests for <code>shop.example.com/cart</code> go to the cart Service". It is only a description.</li>
+    <li><strong>Ingress controller</strong>: a program running in the cluster that <em>watches</em> Ingress resources and configures a real load balancer to match. Examples: NGINX, HAProxy, Traefik, and cloud-specific ones such as the AWS Load Balancer Controller.</li>
+  </ul>
+  <p>Why split? Kubernetes cannot build in logic for every load balancer on the market. So each vendor writes a controller, and you install the one you want. This follows the same pattern as everywhere else in Kubernetes: a resource describes the wanted state, and a controller makes it real (just like kube-proxy for Services; see <a href="02-architecture.html">Lesson 2</a>).</p>
+  <div class="callout warn"><span class="callout-title">Watch out</span>An Ingress resource without a controller does nothing. You can create 100 Ingresses and nothing will happen, because nobody is watching them. Install a controller first; the <code>ADDRESS</code> column of <code>kubectl get ingress</code> stays empty until one picks it up.</div>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 700 270" role="img" aria-label="Users send requests to one load balancer. The ingress controller reads Ingress rules and forwards shop.example.com/cart to the cart Service and shop.example.com/pay to the pay Service. Each Service routes to its own Pods.">
+      <defs><marker id="arr9" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" style="fill:var(--text-2)"/></marker></defs>
+      <rect class="s-box2" x="8" y="104" width="90" height="52" rx="8"/><text class="s-text-b" x="53" y="135" text-anchor="middle">Users</text>
+      <path class="s-line-o" d="M98 130 H146" marker-end="url(#arr9)"/>
+      <rect class="s-dash" x="148" y="8" width="544" height="254" rx="12"/><text class="s-text-s" x="162" y="28">Cluster</text>
+      <rect class="s-orange" x="164" y="92" width="140" height="76" rx="10"/><text class="s-text-ink" x="234" y="124" text-anchor="middle">Ingress</text><text class="s-text-ink" x="234" y="144" text-anchor="middle">controller</text>
+      <rect class="s-purple" x="164" y="190" width="140" height="48" rx="8"/><text class="s-text-b" x="234" y="212" text-anchor="middle">Ingress rules</text><text class="s-text-s" x="234" y="229" text-anchor="middle">(YAML resource)</text>
+      <path class="s-line" d="M234 190 V170" marker-end="url(#arr9)"/>
+      <path class="s-line-o" d="M304 115 L392 70" marker-end="url(#arr9)"/>
+      <path class="s-line-o" d="M304 145 L392 200" marker-end="url(#arr9)"/>
+      <text class="s-text-s" x="320" y="82">/cart</text><text class="s-text-s" x="320" y="196">/pay</text>
+      <rect class="s-green" x="394" y="44" width="110" height="50" rx="8"/><text class="s-text-b" x="449" y="74" text-anchor="middle">cart Service</text>
+      <rect class="s-green" x="394" y="176" width="110" height="50" rx="8"/><text class="s-text-b" x="449" y="206" text-anchor="middle">pay Service</text>
+      <path class="s-line" d="M504 69 H540" marker-end="url(#arr9)"/><path class="s-line" d="M504 201 H540" marker-end="url(#arr9)"/>
+      <rect class="s-blue" x="542" y="44" width="136" height="50" rx="8"/><text class="s-text-b" x="610" y="74" text-anchor="middle">cart Pods</text>
+      <rect class="s-blue" x="542" y="176" width="136" height="50" rx="8"/><text class="s-text-b" x="610" y="206" text-anchor="middle">pay Pods</text>
+    </svg>
+    <figcaption>One entry point. The controller reads the Ingress rules and routes by host and path.</figcaption>
+  </figure>
+
+  <h2>Writing an Ingress</h2>
+  <p>A basic Ingress with host and path rules. Note <code>networking.k8s.io/v1</code> (the old <code>extensions</code> API was removed) and that <code>pathType</code> is required.</p>
+<pre><code>apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: shop
+spec:
+  ingressClassName: nginx          # which controller should handle this
+  rules:
+    - host: shop.example.com
+      http:
+        paths:
+          - path: /cart
+            pathType: Prefix
+            backend:
+              service:
+                name: cart-svc
+                port:
+                  number: 80
+          - path: /pay
+            pathType: Prefix
+            backend:
+              service:
+                name: pay-svc
+                port:
+                  number: 80</code></pre>
+  <h3>Routing options</h3>
+  <ul>
+    <li><strong>Host-based:</strong> <code>shop.example.com</code> and <code>blog.example.com</code> go to different Services, sharing one IP.</li>
+    <li><strong>Path-based:</strong> <code>/cart</code> and <code>/pay</code> on the same host go to different Services.</li>
+    <li><strong>Wildcard hosts:</strong> <code>*.example.com</code> matches any single subdomain (quote the host in YAML: <code>"*.example.com"</code>).</li>
+    <li><strong>Extras via annotations:</strong> basic auth, rate limits, redirects and so on, which depend on the controller.</li>
+  </ul>
+  <p>If no rule matches, the controller answers with a <code>404</code> from its default backend. A request with the wrong <code>Host</code> header gets that 404 even though the Service is healthy.</p>
+
+  <div class="demo" id="demo-route">
+    <div class="demo-head">Try it: Ingress routing simulator</div>
+    <div class="demo-body">
+      <p>These are the rules in the cluster. Pick a host and a path, then send a request and see which backend gets it.</p>
+      <div class="rule-tbl" id="rt-rules"></div>
+      <div class="rt-grid">
+        <div><label for="rt-host">Host header</label>
+          <select id="rt-host"><option>shop.example.com</option><option>blog.example.com</option><option>api.example.com</option><option>unknown.org</option></select></div>
+        <div><label for="rt-path">Path</label>
+          <input id="rt-path" type="text" value="/cart/items" autocomplete="off" spellcheck="false"></div>
+      </div>
+      <div class="row"><button class="btn primary" id="rt-go">Send request</button></div>
+      <div class="output" id="rt-out">Press <b>Send request</b>.</div>
+    </div>
+  </div>
+
+  <h2>Several controllers: IngressClass</h2>
+  <p>A cluster can run more than one controller, for example NGINX for public sites and another for internal tools. The <code>ingressClassName</code> field says which controller owns an Ingress. A controller ignores Ingresses of other classes. If your Ingress never gets an address, a missing or wrong class is a very common reason.</p>
+  <p>To find out what a controller has actually done, check its Pod logs or generated config. For NGINX, the controller rewrites <code>nginx.conf</code> with a <code>location</code> block for every rule.</p>
+
+  <h2>TLS: serving HTTPS</h2>
+  <p><strong>TLS</strong> encrypts traffic between the client and your server (that is the "S" in HTTPS). With Ingress you can handle it in three ways.</p>
+  <div class="table-wrap"><table>
+    <tr><th></th><th>Passthrough</th><th>Termination (offloading)</th><th>Re-encrypt (bridging)</th></tr>
+    <tr><td>Client to LB</td><td>Encrypted</td><td>Encrypted</td><td>Encrypted</td></tr>
+    <tr><td>LB to Pod</td><td>Encrypted (untouched)</td><td>Plain HTTP</td><td>Encrypted again</td></tr>
+    <tr><td>Who decrypts</td><td>Only the app</td><td>Load balancer</td><td>LB, then app</td></tr>
+    <tr><td>LB can inspect and route by path?</td><td>No (TCP level only)</td><td>Yes</td><td>Yes</td></tr>
+    <tr><td>Load on the app</td><td>High</td><td>Low</td><td>High</td></tr>
+    <tr><td>Main risk</td><td>LB cannot filter bad requests</td><td>Plain traffic inside your network</td><td>Most work, but safest</td></tr>
+  </table></div>
+  <ul>
+    <li><strong>Passthrough:</strong> the load balancer just forwards encrypted bytes. Very private, but it cannot see paths, cookies or attacks, so features like path routing or a firewall do not work.</li>
+    <li><strong>Termination:</strong> the most common setup. The controller decrypts HTTPS and forwards plain HTTP to Pods. It is simple and fast, but traffic inside is unencrypted, which is a problem if the network is not trusted.</li>
+    <li><strong>Re-encrypt:</strong> the controller decrypts, inspects and routes, then encrypts again toward the Pod. Both hops are secure and the LB can still filter, at the cost of the Pod also doing TLS work.</li>
+  </ul>
+  <div class="callout"><span class="callout-title">Note</span>OpenShift calls these "edge", "passthrough" and "re-encrypt" routes. On plain Kubernetes with the NGINX controller, termination is the default; passthrough and re-encrypt are enabled with controller annotations.</div>
+
+  <h3>TLS termination in Kubernetes</h3>
+  <p>The certificate and key live in a <strong>Secret</strong> of type <code>kubernetes.io/tls</code>, and the Ingress references it by name. Keeping certificates in a Secret means the Ingress YAML can be stored in Git safely (never commit the key itself).</p>
+<pre><code># 1) a certificate for testing (self-signed)
+openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+  -keyout tls.key -out tls.crt \
+  -subj "/CN=shop.example.com" -addext "subjectAltName=DNS:shop.example.com"
+
+# 2) store it as a TLS Secret
+kubectl create secret tls shop-tls --cert=tls.crt --key=tls.key</code></pre>
+<pre><code>spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - shop.example.com
+      secretName: shop-tls         # must be in the same namespace
+  rules:
+    - host: shop.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: cart-svc
+                port:
+                  number: 80</code></pre>
+  <p>A self-signed certificate makes browsers and <code>curl</code> complain ("self-signed certificate"); for testing use <code>curl -k</code> or pass the cert with <code>--cacert tls.crt</code>. In production, use a real certificate, commonly issued automatically by <strong>cert-manager</strong> with Let's Encrypt. A wildcard certificate (<code>*.example.com</code>) can cover many hosts with a single Secret.</p>
+
+  <div class="callout interview"><span class="callout-title">Interview angle</span>Expect "What is an Ingress controller and why is it needed?" Answer: the Ingress resource is only rules; a controller (NGINX, HAProxy, Traefik...) watches them and configures the actual load balancer. Without a controller, nothing happens. Also be ready to compare passthrough, termination and re-encrypt.</div>
+  <div class="xref-box"><div>Ready to try it? <a href="10-ingress-demo.html">Lesson 10: Ingress Live Demo</a> installs a controller and tests these rules step by step. For the newer replacement of Ingress, see <a href="30-gateway-api.html">Lesson 30: Gateway API</a>.</div></div>
+
+  <h2>Check yourself</h2>
+  <div class="quiz" data-answer="1">
+    <div class="q">You apply an Ingress YAML on a fresh cluster and the ADDRESS column stays empty. Most likely reason?</div>
+    <div class="opts"><button>The Service type must be NodePort</button><button>No ingress controller is installed (or the class does not match)</button><button>Ingress only works with TLS</button></div>
+    <div class="explain">The Ingress resource only holds rules. A controller must watch it and configure a load balancer.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">Which TLS option lets the load balancer read paths and filter requests, while keeping both hops encrypted?</div>
+    <div class="opts"><button>Re-encrypt (bridging)</button><button>Passthrough</button><button>Plain HTTP</button></div>
+    <div class="explain">Re-encrypt decrypts to inspect and route, then encrypts again toward the Pod. Passthrough cannot inspect traffic.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">What is one cost-related advantage of Ingress over many LoadBalancer Services?</div>
+    <div class="opts"><button>Ingress removes the need for Services</button><button>Ingress makes Pods start faster</button><button>Many apps share one load balancer and public IP</button></div>
+    <div class="explain">Each LoadBalancer Service typically gets its own billed cloud load balancer. An Ingress shares one entry point.</div>
+  </div>
+
+  <section class="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li>Ingress adds host/path routing, TLS and other HTTP features, and lets many apps share <strong>one</strong> load balancer and IP.</li>
+      <li>The <strong>Ingress resource</strong> holds rules; the <strong>ingress controller</strong> (NGINX, HAProxy, Traefik, cloud controllers) makes them real. No controller means nothing happens.</li>
+      <li>Use <code>ingressClassName</code> to pick the controller; <code>pathType</code> and <code>networking.k8s.io/v1</code> are required.</li>
+      <li>TLS options: passthrough (private, no inspection), termination (simple, fast, plain HTTP inside), re-encrypt (inspection plus encryption both ways).</li>
+      <li>Store certificates in a <code>kubernetes.io/tls</code> Secret and reference it from <code>spec.tls</code>.</li>
+    </ul>
+  </section>
+</main>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var RULES = [
+    { host: "shop.example.com", path: "/cart", svc: "cart-svc" },
+    { host: "shop.example.com", path: "/pay", svc: "pay-svc" },
+    { host: "blog.example.com", path: "/", svc: "blog-svc" }
+  ];
+  function drawRules(hit) {
+    $("rt-rules").innerHTML = RULES.map(function (r, i) {
+      return '<div class="' + (i === hit ? "hit" : "") + '">' + r.host + r.path + " (Prefix) &rarr; " + r.svc + "</div>";
+    }).join("");
+  }
+  function prefixMatch(rulePath, reqPath) {
+    if (rulePath === "/") return true;
+    return reqPath === rulePath || reqPath.indexOf(rulePath + "/") === 0;
+  }
+  function send() {
+    var host = $("rt-host").value, path = $("rt-path").value.trim() || "/";
+    if (path.charAt(0) !== "/") path = "/" + path;
+    var best = -1, bestLen = -1;
+    RULES.forEach(function (r, i) {
+      if (r.host === host && prefixMatch(r.path, path) && r.path.length > bestLen) { best = i; bestLen = r.path.length; }
+    });
+    drawRules(best);
+    var out = $("rt-out");
+    if (best < 0) {
+      out.className = "output bad";
+      out.innerHTML = "<b>404 Not Found</b> from the controller's default backend. No rule matches <code>" + host + path + "</code>.";
+    } else {
+      out.className = "output ok";
+      out.innerHTML = "<b>200</b> The controller forwards <code>" + host + path + "</code> to <b>" + RULES[best].svc + "</b>, which picks a Pod.";
+    }
+  }
+  $("rt-go").addEventListener("click", send);
+  drawRules(-1);
+})();
+</script>
+</body>
+</html>
