@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pods: Deploy Your First App · Kubernetes Simplified</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/site.js"></script>
+<style>
+  .form-grid { display: grid; grid-template-columns: 1fr; gap: 8px; margin: 8px 0; }
+  @media (min-width: 560px) { .form-grid { grid-template-columns: 1fr 1fr; } }
+  .form-grid label { display: block; font-size: 14px; }
+  .form-grid input { width: 100%; box-sizing: border-box; }
+  #pd-yaml { white-space: pre; overflow-x: auto; font: 13px/1.5 var(--mono); }
+</style>
+</head>
+<body data-page="04">
+<main class="wrap">
+  <header class="page-head">
+    <h1>Pods: Deploy Your First App</h1>
+    <p class="lead">The Pod is the smallest thing you can run in Kubernetes. You'll learn what it is, how to describe one in YAML, and the essential kubectl commands to create it, look at it, debug it and delete it.</p>
+  </header>
+
+  <div class="xref-box"><div>Pods are scheduled onto nodes by the control plane. If you need the background, see <a href="02-architecture.html">Lesson 2: Architecture</a>.</div></div>
+
+  <h2>What is a Pod?</h2>
+  <p>With Docker you run a <em>container</em>. In Kubernetes you cannot deploy a bare container: the lowest level of deployment is a <strong>Pod</strong>, a thin wrapper around one or more containers. You still build and use the same container images; you just deploy them as a Pod.</p>
+  <p>Think of a Pod as a <strong>definition of how to run a container</strong>. With Docker you pass everything on the command line:</p>
+<pre><code>docker run -d --name nginx -p 80:80 nginx</code></pre>
+  <p>(<code>-d</code> runs it in the background, <code>--name</code> names it, <code>-p</code> maps a port, and you might also add <code>-v</code> for volumes or a network option.) In Kubernetes you write that same information in a <strong>YAML file</strong> instead. A Pod is, for a single container, almost the same thing as a Docker container; the difference is that the specification lives in a file rather than a long command.</p>
+  <p>Why the extra work? Kubernetes is an enterprise platform built on <strong>declarative</strong> files and standardisation. A developer or DevOps engineer can open the Pod file in a Git repository and immediately see the image, the port the app listens on, the volumes and so on, even with thousands of containers in production.</p>
+  <p>Why the extra layer? A Pod gives its containers a shared home:</p>
+  <ul>
+    <li><strong>One IP address</strong> for the whole Pod, so containers inside can talk to each other on <code>localhost</code>.</li>
+    <li><strong>Shared storage</strong> (volumes) and shared network settings.</li>
+    <li><strong>One lifecycle:</strong> they are scheduled, started and stopped together on the same node.</li>
+  </ul>
+  <div class="callout analogy"><span class="callout-title">Think of it like…</span>A Pod is a small apartment. Usually one person (container) lives there. Sometimes a helper lives there too, and they share the address, the kitchen, and the Wi-Fi.</div>
+  <p>In most cases, <strong>a Pod has exactly one container</strong>. Multiple containers are for tightly coupled helpers: <strong>sidecar</strong> containers (such as a log shipper or proxy running next to your app) and <strong>init containers</strong> (which run first to prepare things). For example, if your app needs to read files or call another container, putting both in one Pod lets them share networking and storage: container A can reach container B at <code>localhost:3000</code>, and they can share files. Multi-container Pods are a rare, advanced case; sidecars come back with service meshes later.</p>
+  <p>Kubernetes gives the <strong>Pod</strong> an IP address (via kube-proxy, see <a href="02-architecture.html">Lesson 2</a>), not each container. You reach the app inside through that Pod IP.</p>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 700 200" role="img" aria-label="A node containing two Pods. One Pod holds a single nginx container. The other holds an app container and a log sidecar sharing a volume and one IP address.">
+      <rect class="s-green" x="10" y="10" width="680" height="180" rx="12"/>
+      <text class="s-text-s" x="26" y="32">Worker node</text>
+      <rect class="s-orange-soft" x="40" y="48" width="260" height="120" rx="10"/>
+      <text class="s-text-b" x="170" y="70" text-anchor="middle">Pod  10.244.1.5</text>
+      <rect class="s-blue" x="80" y="88" width="180" height="56" rx="8"/>
+      <text class="s-text-b" x="170" y="121" text-anchor="middle">nginx container</text>
+      <rect class="s-orange-soft" x="340" y="48" width="330" height="120" rx="10"/>
+      <text class="s-text-b" x="505" y="70" text-anchor="middle">Pod  10.244.1.6</text>
+      <rect class="s-blue" x="358" y="88" width="130" height="56" rx="8"/>
+      <text class="s-text-b" x="423" y="121" text-anchor="middle">app</text>
+      <rect class="s-purple" x="522" y="88" width="130" height="56" rx="8"/>
+      <text class="s-text-b" x="587" y="115" text-anchor="middle">log sidecar</text>
+      <text class="s-text-s" x="587" y="132" text-anchor="middle">same IP, shared disk</text>
+    </svg>
+    <figcaption>A typical Pod holds one container; a sidecar Pod holds two that share an IP and storage.</figcaption>
+  </figure>
+  <div class="callout warn"><span class="callout-title">Watch out</span>A bare Pod does not get auto-healing or auto-scaling. If you delete it, or its node fails, nobody recreates it. In real production you rarely deploy bare Pods: you wrap them in a Deployment (or StatefulSet or DaemonSet). A Deployment is almost the same YAML with <code>kind: Deployment</code> and a Pod <code>template</code>, which is <a href="05-deployments-replicasets.html">the next lesson</a>. You still need Pods first, since a Deployment is just a wrapper around them.</div>
+
+  <h2>Setting up</h2>
+  <p><strong>kubectl</strong> is the command line for Kubernetes, like the Docker CLI is for Docker. <code>kubectl get nodes</code> lists the machines, <code>kubectl get pods</code> lists Pods, <code>kubectl get deployments</code> lists Deployments, and so on. Install it from the official "install tools" page for your operating system (it's a copy-paste of a few commands), then check it:</p>
+<pre><code>kubectl version --client</code></pre>
+  <p>You also need a cluster. Creating a real one on a cloud costs money (see <a href="03-managing-clusters-kops.html">Lesson 3</a>), so for learning use a local cluster such as <strong>minikube</strong>, k3s, MicroK8s or kind. Minikube is the easiest start. (Kind, covered in <a href="26-kind.html">Lesson 26</a>, runs Kubernetes nodes as Docker containers and lets you create many clusters on one laptop, so it is a good next step.) These are not full production setups, but they are perfect for learning.</p>
+<pre><code>minikube start
+kubectl get nodes</code></pre>
+  <p>Minikube creates a virtual machine (or uses a Docker container) and runs a <strong>single-node</strong> cluster in it. That one node plays both control plane and worker, so <code>kubectl get nodes</code> shows one node named <code>minikube</code> with status <code>Ready</code>. You can choose how it runs, for example <code>minikube start --driver=docker</code> or another driver such as VirtualBox, depending on your system.</p>
+
+  <h2>Your first Pod, the quick way</h2>
+  <p>This one-liner is the Kubernetes version of the <code>docker run</code> above:</p>
+<pre><code>kubectl run nginx --image=nginx --port=80
+kubectl get pods</code></pre>
+  <p>The first command creates a Pod named <code>nginx</code> running the <code>nginx</code> image from Docker Hub. Right after, you may see <code>ContainerCreating</code> (the image is downloading), then <code>Running</code>.</p>
+  <p>This is handy for quick tests, but real teams describe objects in files, so their setup can be reviewed, versioned and repeated. Next we'll do it the file way.</p>
+
+  <h2>Describing a Pod in YAML</h2>
+  <p>Every Kubernetes object is written in YAML with four top-level fields:</p>
+<pre><code>apiVersion: v1          # which version of the API this object uses
+kind: Pod               # what type of object
+metadata:               # identity: name, labels, namespace
+  name: nginx-pod
+  labels:
+    app: nginx
+spec:                   # the desired state
+  containers:
+    - name: nginx
+      image: nginx:1.27
+      ports:
+        - containerPort: 80</code></pre>
+  <ul>
+    <li><strong>apiVersion</strong> and <strong>kind</strong> say what you are creating. Pods are in the core API group, so just <code>v1</code>. (Deployments use <code>apps/v1</code>.)</li>
+    <li><strong>metadata</strong> holds the <code>name</code> and optional <strong>labels</strong> (below).</li>
+    <li><strong>spec</strong> is where you describe what you want. For a Pod, that's the list of containers: a name, an image, and the ports they listen on.</li>
+  </ul>
+  <p>Compare with the Docker command earlier: <code>image</code> is the image, <code>containerPort</code> is the port the app listens on, and <code>name</code> is the name. Everything in Kubernetes (Pods, Deployments, Services) is written in YAML, so learn to <em>read</em> it well. But nobody memorises it: senior and junior engineers alike copy an example from the official Kubernetes docs and change the values (image, ports, names). The structure stays the same.</p>
+  <div class="callout tip"><span class="callout-title">Tip</span>Bookmark the official <strong>kubectl cheat sheet</strong>; even experienced engineers use it to look up commands. Don't memorise YAML. Generate a starting file with <code>kubectl run nginx --image=nginx --dry-run=client -o yaml &gt; pod.yaml</code>, or use <code>kubectl explain pod.spec</code> to see every field.</div>
+
+  <div class="demo" id="demo-pod">
+    <div class="demo-head">Try it: Pod YAML builder</div>
+    <div class="demo-body">
+      <p>Fill in the fields and watch the YAML and commands update.</p>
+      <div class="form-grid">
+        <label>Pod name<input id="pd-name" value="nginx-pod"></label>
+        <label>Image<input id="pd-image" value="nginx:1.27"></label>
+        <label>Container port<input id="pd-port" type="number" value="80" min="1" max="65535"></label>
+        <label>Label (app=)<input id="pd-label" value="nginx"></label>
+      </div>
+      <div class="output" id="pd-yaml"></div>
+      <div class="output" id="pd-cmd"></div>
+    </div>
+  </div>
+
+  <h2>Create and inspect it</h2>
+<pre><code>kubectl create -f pod.yaml          # create from the file (apply -f also works)
+kubectl apply -f pod.yaml           # create or update from the file
+kubectl get pods                    # list Pods: name, ready, status, restarts, age
+kubectl get pods -o wide            # adds the Pod IP and the node it runs on
+kubectl describe pod nginx-pod      # full details + Events at the bottom
+kubectl logs nginx-pod              # what the container printed
+kubectl exec -it nginx-pod -- sh    # open a shell inside it
+kubectl delete pod nginx-pod        # remove it</code></pre>
+  <div class="table-wrap"><table>
+    <tr><th>Command</th><th>When to use it</th></tr>
+    <tr><td><code>get</code></td><td>Quick status check</td></tr>
+    <tr><td><code>describe</code></td><td>Something's wrong: read the <strong>Events</strong> section (image not found, can't schedule, and so on)</td></tr>
+    <tr><td><code>logs</code></td><td>Your app crashed or misbehaves. Add <code>-c name</code> for a multi-container Pod</td></tr>
+    <tr><td><code>exec</code></td><td>Look around inside: check files, test connections</td></tr>
+  </table></div>
+  <p>The <code>kubectl get pods</code> output is the equivalent of <code>docker ps</code>. With <code>get pods -o wide</code> you'll notice the Pod has an IP such as <code>10.244.0.5</code>. That address works only <em>inside</em> the cluster. To test it, log into a cluster node (with minikube, <code>minikube ssh</code>; on a real cluster, SSH to a node) and run <code>curl 10.244.0.5</code>. With nginx you get the welcome page. The address also changes if the Pod is replaced. Giving Pods stable addresses is the job of <a href="06-services-intro.html">Services</a>. For a quick peek from your laptop, <code>kubectl port-forward pod/nginx-pod 8080:80</code> works (see <a href="24-port-forwarding.html">Lesson 24</a>).</p>
+
+  <h2>Labels</h2>
+  <p><strong>Labels</strong> are key-value tags you put on objects, like <code>app: nginx</code> or <code>env: prod</code>. They do nothing by themselves, but other objects use them to <em>select</em> Pods: Deployments and Services find "their" Pods by label.</p>
+<pre><code>kubectl get pods --show-labels
+kubectl get pods -l app=nginx          # filter by label
+kubectl label pod nginx-pod env=dev    # add a label</code></pre>
+
+  <h2>Multi-container Pods (briefly)</h2>
+  <p>List more than one entry under <code>containers</code>:</p>
+<pre><code>spec:
+  containers:
+    - name: app
+      image: my-app:1.0
+    - name: log-shipper
+      image: fluent/fluent-bit:3.0</code></pre>
+  <p>Both share the Pod's IP and can share volumes. <code>READY</code> will show <code>2/2</code> when both are up.</p>
+  <div class="callout interview"><span class="callout-title">Interview angle</span>"How do you debug a Pod?" Your two go-to commands: <code>kubectl describe pod NAME</code> (status, errors and events) and <code>kubectl logs NAME</code> (what the app printed).</div>
+  <div class="callout interview"><span class="callout-title">Interview angle</span>"Why does Kubernetes use Pods instead of running containers directly?" Because some containers must share networking and storage and be scheduled together. The Pod is the unit of scheduling. Mention sidecars, and that bare Pods don't self-heal.</div>
+
+  <h2>Check yourself</h2>
+  <div class="quiz" data-answer="1">
+    <div class="q">You delete a Pod you created with <code>kubectl run</code>. What happens?</div>
+    <div class="opts"><button>Kubernetes recreates it immediately</button><button>It's gone, since nothing manages a bare Pod</button><button>It moves to another node</button></div>
+    <div class="explain">Self-healing needs a controller such as a Deployment, covered in the next lesson.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">A Pod is stuck, not Running. Which command shows the Events that explain why?</div>
+    <div class="opts"><button>kubectl exec</button><button>kubectl get pods</button><button>kubectl describe pod</button></div>
+    <div class="explain"><code>describe</code> lists Events such as "Failed to pull image" or "0/3 nodes available".</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">What are the four top-level fields in almost every Kubernetes manifest?</div>
+    <div class="opts"><button>apiVersion, kind, metadata, spec</button><button>name, image, port, label</button><button>cluster, node, pod, container</button></div>
+    <div class="explain">Which API, what kind of object, its identity, and its desired state.</div>
+  </div>
+
+  <section class="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li>A Pod wraps one or more containers that share an IP, storage and lifecycle. One container per Pod is the norm.</li>
+      <li>Manifests have <code>apiVersion</code>, <code>kind</code>, <code>metadata</code> and <code>spec</code>.</li>
+      <li>Core commands: <code>apply -f</code>, <code>get</code>, <code>describe</code>, <code>logs</code>, <code>exec</code>, <code>delete</code>.</li>
+      <li><code>describe</code> and its Events are your first stop when a Pod misbehaves.</li>
+      <li>Labels tag objects so other objects can find them.</li>
+      <li>Bare Pods don't heal themselves, so next we use Deployments.</li>
+    </ul>
+  </section>
+</main>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  function clean(s, f) { s = (s || "").trim(); return s || f; }
+  function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+  function render() {
+    var name = clean($("pd-name").value, "my-pod").toLowerCase().replace(/[^a-z0-9.-]/g, "-");
+    var image = clean($("pd-image").value, "nginx");
+    var port = parseInt($("pd-port").value, 10) || 80;
+    var label = clean($("pd-label").value, "web");
+    var y = "apiVersion: v1\nkind: Pod\nmetadata:\n  name: " + name + "\n  labels:\n    app: " + label +
+      "\nspec:\n  containers:\n    - name: " + label + "\n      image: " + image + "\n      ports:\n        - containerPort: " + port;
+    $("pd-yaml").innerHTML = esc(y);
+    $("pd-cmd").innerHTML = esc("kubectl apply -f pod.yaml\nkubectl get pods -l app=" + label + "\nkubectl describe pod " + name + "\nkubectl logs " + name).replace(/\n/g, "<br>");
+  }
+  ["pd-name", "pd-image", "pd-port", "pd-label"].forEach(function (id) { $(id).addEventListener("input", render); });
+  render();
+})();
+</script>
+</body>
+</html>
