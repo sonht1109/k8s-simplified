@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Upgrading a Cluster in Production · Kubernetes Simplified</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/site.js"></script>
+<style>
+  .sel-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 8px 0; }
+  .sel-grid label { display: block; font-size: 14px; }
+  .sel-grid select { width: 100%; margin-top: 4px; }
+  .out-list { margin: 6px 0 0; padding-left: 20px; }
+</style>
+</head>
+<body data-page="16">
+<main class="wrap">
+  <header class="page-head">
+    <h1>Upgrading a Cluster in Production</h1>
+    <p class="lead">Kubernetes ships a new version about every three months, and only the latest three are supported. Upgrading a live cluster without downtime is a routine DevOps job and a favourite interview topic. You will learn the checks to do first, the order of the upgrade, and how to prove it worked.</p>
+  </header>
+
+  <div class="xref-box"><div>New to the pieces of a cluster? The control plane and worker nodes are explained in <a href="02-architecture.html">Lesson 2: Architecture</a>. Managing many clusters is covered in <a href="03-managing-clusters-kops.html">Lesson 3</a>.</div></div>
+
+  <h2>Why you must upgrade</h2>
+  <ul>
+    <li>Kubernetes releases a new <strong>minor version</strong> (1.30, 1.31, 1.32 ...) roughly every three months.</li>
+    <li>Only the <strong>latest three</strong> minor versions get security fixes. Cloud providers sometimes extend support a little, but plan on the latest three.</li>
+    <li>A company usually runs several clusters (dev, QA/staging, pre-production, production), so you will repeat this often.</li>
+  </ul>
+  <p>The examples here use <strong>AWS EKS</strong>, a managed cluster. The steps are almost the same on AKS, GKE and self-managed clusters.</p>
+  <div class="callout warn"><span class="callout-title">Watch out: no way back</span>A cluster upgrade is <strong>irreversible</strong>. If you go from 1.30 to 1.31 and something breaks, you cannot downgrade the cluster. Your only way back is a fresh cluster. That is why almost all of the work happens <em>before</em> you press the button.</div>
+
+  <h2>Part 1: Prerequisites (the real work)</h2>
+  <p>In production, the prep takes days. The upgrade command itself takes minutes.</p>
+  <ol class="steps">
+    <li><strong>Optional: cordon the nodes.</strong> "Cordon" means mark a node <em>unschedulable</em> so no new Pods land on it. Teams that want extra safety announce a 1-2 hour window with no new deployments. Running apps are not touched. This is not mandatory.</li>
+    <li><strong>Read the release notes</strong> for the version you are moving to. Look for removed or deprecated APIs and changed behaviour. Example: Ingress once lived in the <code>extensions/v1beta1</code> API group and moved to <code>networking.k8s.io</code>. A cluster that dropped the old group would stop honouring Ingress objects still written the old way.</li>
+    <li><strong>Test in lower environments first.</strong> Upgrade dev, then staging, then pre-production. Wait one to two weeks. Only then touch production.</li>
+    <li><strong>Make versions match.</strong> The nodes must be on the same version as the control plane before you upgrade the control plane. If the control plane is 1.30 and nodes are 1.29, upgrade the nodes to 1.30 first. The <code>kubelet</code> (the agent on each node) must be compatible with the control plane too.</li>
+    <li><strong>Check add-ons.</strong> If you run the Cluster Autoscaler, its version must be compatible with the new control plane version. Helm, Argo CD, Prometheus and friends are just controllers and Pods, so verify them in lower environments.</li>
+    <li><strong>Free IP addresses.</strong> On EKS, keep at least <strong>five free IP addresses</strong> in the subnets you gave the cluster. Upgrades temporarily need extra network addresses.</li>
+    <li><strong>Know your cluster.</strong> Know which controllers, add-ons and networking setup you have. Otherwise the release notes will not mean anything to you.</li>
+  </ol>
+  <div class="callout tip"><span class="callout-title">Backups and a rollback plan</span>Because you cannot downgrade, "rollback" means being ready to <em>recover</em>. Keep your manifests in Git, back up anything stateful (databases, persistent volumes, and etcd if you run it yourself), and know how you would rebuild the cluster and redeploy. On managed services the provider backs up the control plane for you, but your own data and YAML are still your job.</div>
+
+  <h2>Part 2: The upgrade order</h2>
+  <p>Always go in the same order, one minor version at a time (you cannot skip from 1.29 straight to 1.31):</p>
+  <figure class="diagram">
+    <svg viewBox="0 0 700 170" role="img" aria-label="Three phases in order: 1 control plane, 2 nodes, 3 add-ons, followed by testing.">
+      <defs><marker id="arr16" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" style="fill:var(--text-2)"/></marker></defs>
+      <rect class="s-blue" x="10" y="30" width="150" height="90" rx="10"/>
+      <text class="s-text-b" x="85" y="62" text-anchor="middle">1. Control plane</text>
+      <text class="s-text-s" x="85" y="84" text-anchor="middle">one command</text>
+      <text class="s-text-s" x="85" y="102" text-anchor="middle">~25 min</text>
+      <rect class="s-green" x="190" y="30" width="150" height="90" rx="10"/>
+      <text class="s-text-b" x="265" y="62" text-anchor="middle">2. Nodes</text>
+      <text class="s-text-s" x="265" y="84" text-anchor="middle">node by node</text>
+      <text class="s-text-s" x="265" y="102" text-anchor="middle">longest step</text>
+      <rect class="s-purple" x="370" y="30" width="150" height="90" rx="10"/>
+      <text class="s-text-b" x="445" y="62" text-anchor="middle">3. Add-ons</text>
+      <text class="s-text-s" x="445" y="84" text-anchor="middle">kube-proxy, CNI,</text>
+      <text class="s-text-s" x="445" y="102" text-anchor="middle">CoreDNS ...</text>
+      <rect class="s-orange-soft" x="550" y="30" width="140" height="90" rx="10"/>
+      <text class="s-text-b" x="620" y="62" text-anchor="middle">4. Test</text>
+      <text class="s-text-s" x="620" y="84" text-anchor="middle">end-to-end</text>
+      <text class="s-text-s" x="620" y="102" text-anchor="middle">tests</text>
+      <path class="s-line" d="M160 75 H188" marker-end="url(#arr16)"/>
+      <path class="s-line" d="M340 75 H368" marker-end="url(#arr16)"/>
+      <path class="s-line" d="M520 75 H548" marker-end="url(#arr16)"/>
+    </svg>
+    <figcaption>Control plane first, then the nodes, then the add-ons, then verify.</figcaption>
+  </figure>
+
+  <h3>Step 1: Control plane</h3>
+  <p>A <strong>managed</strong> control plane (EKS, AKS, GKE) means the provider keeps it highly available, secure and scaled. It does <em>not</em> mean it upgrades itself. You still ask for the upgrade, in the console, the cloud CLI or a tool like <code>eksctl</code>:</p>
+<pre><code>eksctl upgrade cluster --name demo --region us-east-1 --version 1.31 --approve</code></pre>
+  <p>Before you run it, check the console's <strong>upgrade insights</strong> (on EKS). It flags add-ons or APIs outside the compatibility range. When it finishes, the control plane runs the new version but your nodes do not yet.</p>
+
+  <h3>Step 2: Nodes (the data plane)</h3>
+  <p>This is where you need to be careful. How you do it depends on how nodes were created:</p>
+  <div class="grid-2">
+    <div class="card"><h3>Managed node group</h3><p>Choose a <strong>rolling update</strong>. The service replaces nodes one at a time, so Pods are moved off a node before it is replaced. Best for large clusters (100+ nodes). Use the "force" option only when a PodDisruptionBudget blocks the drain.</p></div>
+    <div class="card"><h3>Self-managed nodes</h3><p>You do it yourself: cordon, drain, replace. For small clusters you can instead create a new node group on the new version, then delete the old one. Custom AMIs or launch templates are <em>your</em> job to rebuild.</p></div>
+  </div>
+  <p>Draining one node by hand looks like this:</p>
+<pre><code>kubectl cordon node-1                  # stop new Pods landing here
+kubectl drain node-1 --ignore-daemonsets --delete-emptydir-data
+# replace or upgrade the node, then:
+kubectl uncordon node-1                # allow scheduling again</code></pre>
+  <p><code>drain</code> evicts the Pods so their Deployment recreates them on other nodes. That is how the <a href="05-deployments-replicasets.html">rolling behaviour of Deployments</a> keeps your app up while nodes change.</p>
+  <div class="callout"><span class="callout-title">Note: PodDisruptionBudgets</span>A PodDisruptionBudget (PDB) says "always keep at least N replicas running". A drain respects it, which keeps the app safe but can make a drain wait. That is the one case where a forced update is considered.</div>
+
+  <h3>Step 3: Add-ons</h3>
+  <p>Cluster add-ons such as <code>kube-proxy</code>, the VPC CNI network plugin and CoreDNS have their own versions. Upgrade each to a version compatible with the new cluster version. On EKS this is a button or one command per add-on and usually goes smoothly.</p>
+
+  <h2>How do you know it worked?</h2>
+  <p>Do not check tools one by one. Run your <strong>end-to-end (functional/regression) test suite</strong> against the upgraded cluster. If real user journeys still pass, the upgrade is healthy. Also check that all nodes show <code>Ready</code> and the new version:</p>
+<pre><code>kubectl get nodes
+kubectl version
+kubectl get pods -A</code></pre>
+
+  <div class="demo" id="demo-skew">
+    <div class="demo-head">Try it: upgrade pre-flight check</div>
+    <div class="demo-body">
+      <p>Pick your versions and see whether you are ready to upgrade the control plane.</p>
+      <div class="sel-grid">
+        <label>Control plane now<select id="sk-cp"><option>1.29</option><option selected>1.30</option><option>1.31</option></select></label>
+        <label>Nodes now<select id="sk-nd"><option>1.28</option><option>1.29</option><option selected>1.30</option><option>1.31</option></select></label>
+        <label>Target version<select id="sk-tg"><option>1.29</option><option>1.30</option><option selected>1.31</option><option>1.32</option><option>1.33</option></select></label>
+      </div>
+      <div class="row"><label><input type="checkbox" id="sk-low"> Tested in lower environments for 1-2 weeks</label></div>
+      <div class="row"><label><input type="checkbox" id="sk-ip" checked> At least 5 free IPs in the subnets</label></div>
+      <div class="row"><button class="btn primary" id="sk-go">Check</button></div>
+      <div class="output" id="sk-out">Press <b>Check</b>.</div>
+    </div>
+  </div>
+
+  <div class="callout interview"><span class="callout-title">Interview angle</span>"How do you upgrade a production cluster with zero downtime?" Answer in this order: read the release notes, test in lower environments, make sure nodes and kubelet match the control plane, check add-on compatibility and free IPs; then upgrade control plane, rolling-update the nodes, upgrade add-ons, and run end-to-end tests. Add that upgrades cannot be reversed, so you plan recovery from backups and Git.</div>
+
+  <h2>Check yourself</h2>
+  <div class="quiz" data-answer="1">
+    <div class="q">What is the correct order for a cluster upgrade?</div>
+    <div class="opts"><button>Add-ons, nodes, control plane</button><button>Control plane, nodes, add-ons</button><button>Nodes, add-ons, control plane</button></div>
+    <div class="explain">The control plane goes first, then the nodes are brought to the same version, then the add-ons. Finish by running tests.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">After upgrading 1.30 to 1.31 you find a serious problem. What can you do?</div>
+    <div class="opts"><button>Run the upgrade command with version 1.30</button><button>Cordon every node</button><button>Nothing in place: you cannot downgrade, so you rebuild or restore from backups</button></div>
+    <div class="explain">Cluster upgrades are irreversible. This is why testing in lower environments and having backups matter so much.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">Your control plane is 1.30 and your nodes are 1.29. You want 1.31. What first?</div>
+    <div class="opts"><button>Upgrade the nodes to 1.30, then upgrade the control plane</button><button>Upgrade the control plane straight to 1.31</button><button>Delete the nodes</button></div>
+    <div class="explain">Nodes must match the control plane before the next upgrade, and you move one minor version at a time.</div>
+  </div>
+
+  <section class="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li>Only the latest three Kubernetes versions are supported, so upgrading is a regular duty.</li>
+      <li>Upgrades are <strong>irreversible</strong>. Prevent problems with release notes, lower-environment tests (1-2 weeks) and backups.</li>
+      <li>Nodes and kubelet must match the control plane first; autoscaler and add-ons must be compatible; keep 5 free IPs (EKS).</li>
+      <li>Order: <strong>control plane, nodes, add-ons</strong>, one minor version at a time.</li>
+      <li>"Managed" control plane means the provider runs it, not that it upgrades itself.</li>
+      <li>Use cordon/drain or rolling node updates, and verify with end-to-end tests.</li>
+    </ul>
+  </section>
+</main>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  function minor(v) { return parseInt(v.split(".")[1], 10); }
+  $("sk-go").addEventListener("click", function () {
+    var cp = minor($("sk-cp").value), nd = minor($("sk-nd").value), tg = minor($("sk-tg").value);
+    var items = [], ok = true;
+    function add(good, txt) { items.push("<li>" + (good ? "&#10004; " : "&#10008; ") + txt + "</li>"); if (!good) ok = false; }
+    if (tg <= cp) add(false, "Target 1." + tg + " is not newer than the control plane (1." + cp + "). Downgrades are not possible.");
+    else if (tg - cp > 1) add(false, "You cannot skip versions. Go to 1." + (cp + 1) + " first, then onward.");
+    else add(true, "Target is exactly one minor version ahead.");
+    if (nd < cp) add(false, "Nodes (1." + nd + ") are behind the control plane (1." + cp + "). Upgrade the nodes to 1." + cp + " first.");
+    else if (nd > cp) add(false, "Nodes (1." + nd + ") are newer than the control plane. A kubelet must never be newer than the API server.");
+    else add(true, "Nodes match the control plane.");
+    add($("sk-low").checked, $("sk-low").checked ? "Lower environments tested." : "Test dev, staging and pre-prod first and wait 1-2 weeks.");
+    add($("sk-ip").checked, $("sk-ip").checked ? "Enough free IP addresses." : "Free up at least 5 IP addresses in the subnets.");
+    var out = $("sk-out");
+    out.className = "output " + (ok ? "ok" : "bad");
+    out.innerHTML = "<b>" + (ok ? "Ready: upgrade the control plane, then nodes, then add-ons." : "Not ready yet.") + '</b><ul class="out-list" style="list-style:none;padding-left:0">' + items.join("") + "</ul>";
+  });
+})();
+</script>
+</body>
+</html>
