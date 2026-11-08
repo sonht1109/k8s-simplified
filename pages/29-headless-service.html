@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Headless Services · Kubernetes Simplified</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/site.js"></script>
+</head>
+<body data-page="29">
+<main class="wrap">
+  <header class="page-head">
+    <h1>Headless Services</h1>
+    <p class="lead">A normal Service hides your Pods behind one IP and spreads requests between them. Sometimes that is exactly what you don't want. A headless Service gives each Pod its own stable DNS name instead, which is what databases and other stateful apps need.</p>
+  </header>
+
+  <div class="xref-box"><div>Need a refresher on what a Service does, with selectors, endpoints and load balancing? See <a href="06-services-intro.html">Lesson 6: Services</a>. StatefulSets and volumes are covered in <a href="22-statefulset-pv.html">Lesson 22</a>.</div></div>
+
+  <h2>Quick recap: why normal Services work so well</h2>
+  <p>Pod IPs change whenever a Pod is replaced. A normal Service (type ClusterIP) gives clients one stable virtual IP and DNS name. It finds Pods by <strong>label selector</strong>, and <code>kube-proxy</code> forwards each request to one of the healthy Pods, roughly round-robin. For stateless apps (web servers, APIs) any replica can answer, so this is perfect.</p>
+
+  <h2>The problem: stateful apps</h2>
+  <p>Imagine a backend talking to a database with two replicas, <code>mysql-0</code> and <code>mysql-1</code>, each with <em>its own</em> volume.</p>
+  <ol class="steps">
+    <li>Request 1: "add a new employee". The Service sends it to <code>mysql-0</code>, which stores it on its volume.</li>
+    <li>Request 2: "list all employees". The Service sends it to <code>mysql-1</code>, which never saw the new employee.</li>
+  </ol>
+  <p>The user sees missing data. The replicas are not interchangeable, so the Service's load balancing becomes a bug. Clients need to say <strong>which</strong> replica they want. Examples: "write to the primary", "read from replica 1", "never send traffic to the backup node".</p>
+
+  <h2>What a headless Service is</h2>
+  <p>A <strong>headless Service</strong> is a Service with <code>clusterIP: None</code>. Kubernetes then gives it no virtual IP and does no proxying or load balancing. All it does is publish <strong>DNS records</strong> so that clients can find the Pods directly.</p>
+  <div class="callout analogy"><span class="callout-title">Think of it like…</span>A normal Service is a company's reception desk: you call one number and get whoever is free. A headless Service is the staff directory: it lists everyone's direct line, and you choose who to call.</div>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 700 300" role="img" aria-label="Top: a client calls a normal Service, which balances requests between mysql-0 and mysql-1. Bottom: a client uses DNS names of a headless Service to reach mysql-0 directly.">
+      <defs>
+        <marker id="arr29" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" style="fill:var(--text-2)"/></marker>
+        <marker id="arr29o" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" style="fill:var(--orange)"/></marker>
+      </defs>
+      <text class="s-text-b" x="10" y="20">Normal Service</text>
+      <rect class="s-box2" x="10" y="34" width="110" height="50" rx="8"/>
+      <text class="s-text-b" x="65" y="64" text-anchor="middle">Backend</text>
+      <rect class="s-blue" x="230" y="34" width="130" height="50" rx="8"/>
+      <text class="s-text-b" x="295" y="55" text-anchor="middle">Service</text>
+      <text class="s-text-s" x="295" y="73" text-anchor="middle">one IP, balances</text>
+      <rect class="s-green" x="500" y="20" width="110" height="40" rx="8"/>
+      <text class="s-text-b" x="555" y="45" text-anchor="middle">mysql-0</text>
+      <rect class="s-green" x="500" y="70" width="110" height="40" rx="8"/>
+      <text class="s-text-b" x="555" y="95" text-anchor="middle">mysql-1</text>
+      <path class="s-line" d="M120 59 H228" marker-end="url(#arr29)"/>
+      <path class="s-line" d="M360 50 L498 40" marker-end="url(#arr29)"/>
+      <path class="s-line" d="M360 68 L498 90" marker-end="url(#arr29)"/>
+      <text class="s-text-b" x="10" y="165">Headless Service</text>
+      <rect class="s-box2" x="10" y="180" width="110" height="50" rx="8"/>
+      <text class="s-text-b" x="65" y="210" text-anchor="middle">Backend</text>
+      <rect class="s-orange-soft" x="230" y="180" width="130" height="50" rx="8"/>
+      <text class="s-text-b" x="295" y="201" text-anchor="middle">DNS names</text>
+      <text class="s-text-s" x="295" y="219" text-anchor="middle">clusterIP: None</text>
+      <rect class="s-green" x="500" y="166" width="110" height="40" rx="8"/>
+      <text class="s-text-b" x="555" y="191" text-anchor="middle">mysql-0</text>
+      <rect class="s-green" x="500" y="216" width="110" height="40" rx="8"/>
+      <text class="s-text-b" x="555" y="241" text-anchor="middle">mysql-1</text>
+      <path class="s-line-o" d="M120 205 H228" marker-end="url(#arr29o)"/>
+      <path class="s-line-o" d="M360 195 L498 186" marker-end="url(#arr29o)"/>
+      <text class="s-text-s" x="360" y="278">client picks the Pod by name</text>
+    </svg>
+    <figcaption>A normal Service chooses the Pod for you. A headless Service lets the client choose.</figcaption>
+  </figure>
+
+  <h2>The YAML</h2>
+  <p>The only difference from a normal Service is <code>clusterIP: None</code>. The selector still matches the Pods by label.</p>
+<pre><code>apiVersion: v1
+kind: Service
+metadata:
+  name: mydb-headless
+spec:
+  clusterIP: None
+  selector:
+    app: mysql
+  ports:
+  - port: 3306
+    name: mysql</code></pre>
+  <p>Then a StatefulSet whose <code>serviceName</code> points at that Service. That link is what gives each Pod its own DNS name.</p>
+<pre><code>apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql-stateful
+spec:
+  serviceName: mydb-headless
+  replicas: 3
+  selector:
+    matchLabels:
+      app: mysql
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      containers:
+      - name: mysql
+        image: mysql:8.0
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          value: "demo-only-password"   # use a Secret in real life
+        ports:
+        - containerPort: 3306</code></pre>
+  <div class="callout tip"><span class="callout-title">Tip</span>Create the headless Service <strong>first</strong>, then the StatefulSet. DNS is the whole point, so the Service should exist when the Pods start.</div>
+
+  <h2>The DNS names you get</h2>
+  <p>Each StatefulSet Pod gets a predictable name (<code>mysql-stateful-0</code>, <code>-1</code>, <code>-2</code>), and the headless Service publishes a DNS record for each:</p>
+<pre><code>&lt;pod-name&gt;.&lt;service-name&gt;.&lt;namespace&gt;.svc.cluster.local
+
+mysql-stateful-0.mydb-headless.default.svc.cluster.local
+mysql-stateful-1.mydb-headless.default.svc.cluster.local</code></pre>
+  <p>The Pod's IP can change when it is recreated, but the name keeps pointing to the right replica. Your backend can safely put <code>mysql-stateful-0.mydb-headless...</code> in a ConfigMap.</p>
+  <p>The Service name alone (<code>mydb-headless.default.svc.cluster.local</code>) returns the IPs of <strong>all</strong> ready Pods, which is useful for clients that discover every member themselves, as in database clusters.</p>
+
+  <h2>Try it on a cluster</h2>
+<pre><code>kubectl apply -f headless-svc.yaml
+kubectl apply -f statefulset.yaml
+kubectl get svc            # CLUSTER-IP shows None
+kubectl get pods -o wide   # note the IP of mysql-stateful-0
+
+kubectl run -it --rm dns-test --image=busybox:1.36 --restart=Never -- \
+  nslookup mysql-stateful-0.mydb-headless.default.svc.cluster.local
+
+kubectl delete pod mysql-stateful-0
+# wait for it to come back, then run the nslookup again:
+# same name, new IP</code></pre>
+  <p>The <code>CLUSTER-IP</code> column showing <code>None</code> confirms it is headless, and the repeated lookup shows the DNS name following the Pod through a restart.</p>
+
+  <div class="demo" id="demo-hl">
+    <div class="demo-head">Try it: normal vs headless lookups</div>
+    <div class="demo-body">
+      <p>Pick a Service type, send a few requests or do an <code>nslookup</code>, then restart <code>mysql-0</code> to see what changes.</p>
+      <div class="row">
+        <button class="btn primary" id="hl-n" aria-pressed="true">Normal Service</button>
+        <button class="btn" id="hl-h" aria-pressed="false">Headless Service</button>
+      </div>
+      <div class="row">
+        <button class="btn" id="hl-req">Send 4 requests</button>
+        <button class="btn" id="hl-lookup">nslookup</button>
+        <button class="btn" id="hl-restart">Restart mysql-0</button>
+      </div>
+      <div class="output" id="hl-out">Choose a type, then try the buttons.</div>
+    </div>
+  </div>
+
+  <h2>When to use which</h2>
+  <div class="table-wrap"><table>
+    <tr><th></th><th>Normal (ClusterIP)</th><th>Headless</th></tr>
+    <tr><td><code>clusterIP</code></td><td>virtual IP assigned</td><td><code>None</code></td></tr>
+    <tr><td>Proxying and load balancing</td><td>Yes</td><td>No</td></tr>
+    <tr><td>DNS returns</td><td>the Service IP</td><td>Pod IPs (and per-Pod names with a StatefulSet)</td></tr>
+    <tr><td>Best for</td><td>Stateless apps</td><td>Databases, Redis, Kafka, clustered apps</td></tr>
+  </table></div>
+  <p>A common pattern for stateful systems is to use a headless Service for peer-to-peer or primary/replica access, and a normal Service in front when load balancing reads is fine.</p>
+  <div class="callout interview"><span class="callout-title">Interview angle</span>"What is a headless Service and when do you use it?" A Service with <code>clusterIP: None</code>: no virtual IP and no load balancing, just DNS records for individual Pods. Used with StatefulSets when clients must reach a specific replica.</div>
+
+  <h2>Check yourself</h2>
+  <div class="quiz" data-answer="1">
+    <div class="q">Which field makes a Service headless?</div>
+    <div class="opts"><button><code>type: Headless</code></button><button><code>clusterIP: None</code></button><button><code>selector: none</code></button></div>
+    <div class="explain">Setting <code>clusterIP: None</code> tells Kubernetes not to allocate a virtual IP or do proxying.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">Why is a normal Service a poor fit for a two-replica database where each replica has its own storage?</div>
+    <div class="opts"><button>It cannot use labels</button><button>It is too slow</button><button>It may send a read to a replica that doesn't have the data written to the other one</button></div>
+    <div class="explain">Round-robin treats replicas as interchangeable, but database replicas hold different data and roles.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">What happens to <code>mysql-stateful-0.mydb-headless...</code> when the Pod is deleted and recreated with a new IP?</div>
+    <div class="opts"><button>The same name now resolves to the new Pod IP</button><button>The name disappears for good</button><button>The name moves to mysql-stateful-1</button></div>
+    <div class="explain">StatefulSet Pods keep their identity, so the DNS name keeps pointing to the replacement Pod.</div>
+  </div>
+
+  <section class="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li>Normal Services proxy and load balance, which suits stateless apps but not replicas with different data.</li>
+      <li>A headless Service has <code>clusterIP: None</code>: no proxy, only DNS records pointing at Pods.</li>
+      <li>With a StatefulSet (<code>serviceName</code> set), each Pod gets <code>pod.service.namespace.svc.cluster.local</code>.</li>
+      <li>Names stay stable while Pod IPs change.</li>
+      <li>Create the headless Service before the StatefulSet.</li>
+    </ul>
+  </section>
+</main>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var mode = "normal", ip0 = "10.244.0.15", ip1 = "10.244.1.7", out = $("hl-out");
+  var svcIp = "10.96.12.40", fq = ".mydb-headless.default.svc.cluster.local";
+  function setMode(m) {
+    mode = m;
+    $("hl-n").setAttribute("aria-pressed", m === "normal");
+    $("hl-h").setAttribute("aria-pressed", m === "headless");
+    $("hl-n").className = "btn" + (m === "normal" ? " primary" : "");
+    $("hl-h").className = "btn" + (m === "headless" ? " primary" : "");
+    out.className = "output";
+    out.textContent = (m === "normal" ? "Normal Service selected: one virtual IP " + svcIp + "." : "Headless Service selected: clusterIP is None.");
+  }
+  function show(lines, cls) { out.className = "output " + (cls || ""); out.textContent = lines.join("\n"); out.style.whiteSpace = "pre-wrap"; }
+  $("hl-n").addEventListener("click", function () { setMode("normal"); });
+  $("hl-h").addEventListener("click", function () { setMode("headless"); });
+  $("hl-req").addEventListener("click", function () {
+    var lines = [], i, t;
+    if (mode === "normal") {
+      for (i = 1; i <= 4; i++) { t = Math.random() < 0.5 ? 0 : 1; lines.push("request " + i + " -> " + svcIp + " -> mysql-" + t); }
+      lines.push("The Service picks the replica, so reads may miss data written elsewhere.");
+      show(lines, "bad");
+    } else {
+      for (i = 1; i <= 4; i++) lines.push("request " + i + " -> mysql-0" + fq + " -> mysql-0 (" + ip0 + ")");
+      lines.push("The client chose the replica by name, so it is predictable.");
+      show(lines, "ok");
+    }
+  });
+  $("hl-lookup").addEventListener("click", function () {
+    if (mode === "normal") show(["$ nslookup mydb-svc", "Name: mydb-svc.default.svc.cluster.local", "Address: " + svcIp, "(one IP, no matter how many Pods)"]);
+    else show(["$ nslookup mysql-0" + fq, "Address: " + ip0, "", "$ nslookup mysql-1" + fq, "Address: " + ip1, "(one record per Pod)"], "ok");
+  });
+  $("hl-restart").addEventListener("click", function () {
+    var old = ip0;
+    ip0 = "10.244.0." + (20 + Math.floor(Math.random() * 200));
+    if (mode === "normal") show(["Pod mysql-0 restarted: " + old + " -> " + ip0, "Service IP is still " + svcIp + ". Clients are fine, but still can't pick a replica."]);
+    else show(["Pod mysql-0 restarted: " + old + " -> " + ip0, "mysql-0" + fq, "now resolves to " + ip0 + " (same name, new IP)."], "ok");
+  });
+  setMode("normal");
+})();
+</script>
+</body>
+</html>
