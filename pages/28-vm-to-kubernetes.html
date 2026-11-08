@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Project: Moving Apps from VMs to Kubernetes · Kubernetes Simplified</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/site.js"></script>
+</head>
+<body data-page="28">
+<main class="wrap">
+  <header class="page-head">
+    <h1>Project: Moving Apps from VMs to Kubernetes</h1>
+    <p class="lead">A realistic scenario: a company runs containerised microservices with Docker Compose on virtual machines, and you must move them to Kubernetes. This lesson is the plan: six levels, from a spreadsheet to a multi-region production setup.</p>
+  </header>
+
+  <div class="xref-box"><div>This project reuses ideas from other lessons: <a href="05-deployments-replicasets.html">Deployments</a>, <a href="09-ingress-tls.html">Ingress</a>, <a href="11-rbac.html">RBAC</a>, <a href="22-statefulset-pv.html">StatefulSets</a>, <a href="14-monitoring-prometheus-grafana.html">monitoring</a>. Here we focus on <em>how to sequence the migration</em>.</div></div>
+
+  <h2>The scenario</h2>
+  <p>You join a large company as a DevOps engineer. Their application is made of many microservices (think of an online shop: UI, payments, transactions, shipping, recommendations). Each service is already in a Docker image. Today they run with <strong>Docker Compose on VMs</strong>, with a load balancer in front. Nobody on the team knows Kubernetes, and you must "move us to Kubernetes".</p>
+  <div class="callout warn"><span class="callout-title">Watch out</span>The classic mistake: create a cluster, pick a random service, and deploy it. A migration takes weeks or months, so work in <strong>levels</strong>, each with a clear goal.</div>
+
+  <h2>What changes from Compose to Kubernetes</h2>
+  <div class="table-wrap"><table>
+    <tr><th>In Docker Compose</th><th>In Kubernetes</th></tr>
+    <tr><td>a service with <code>image:</code></td><td>a Deployment (or StatefulSet for databases)</td></tr>
+    <tr><td><code>ports:</code></td><td>a Service (and an Ingress for outside traffic)</td></tr>
+    <tr><td><code>environment:</code></td><td>ConfigMap and Secret</td></tr>
+    <tr><td><code>volumes:</code></td><td>PersistentVolumeClaim</td></tr>
+    <tr><td><code>healthcheck:</code></td><td>liveness and readiness probes</td></tr>
+    <tr><td>load balancer in front of VMs</td><td>Ingress controller / cloud load balancer</td></tr>
+  </table></div>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 700 330" role="img" aria-label="Six steps from level 0 requirement gathering through proof of concept, dev cluster, staging, production, and scaled multi-region production.">
+      <defs><marker id="arr28" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" style="fill:var(--text-2)"/></marker></defs>
+      <rect class="s-box2" x="10" y="20" width="210" height="80" rx="8"/>
+      <text class="s-text-b" x="115" y="52" text-anchor="middle">Level 0</text>
+      <text class="s-text-s" x="115" y="76" text-anchor="middle">Requirements and sheet</text>
+      <rect class="s-blue" x="245" y="20" width="210" height="80" rx="8"/>
+      <text class="s-text-b" x="350" y="52" text-anchor="middle">Level 1</text>
+      <text class="s-text-s" x="350" y="76" text-anchor="middle">Proof of concept</text>
+      <rect class="s-blue" x="480" y="20" width="210" height="80" rx="8"/>
+      <text class="s-text-b" x="585" y="52" text-anchor="middle">Level 2</text>
+      <text class="s-text-s" x="585" y="76" text-anchor="middle">Dev cluster</text>
+      <rect class="s-green" x="10" y="200" width="210" height="80" rx="8"/>
+      <text class="s-text-b" x="115" y="232" text-anchor="middle">Level 3</text>
+      <text class="s-text-s" x="115" y="256" text-anchor="middle">Staging / QE</text>
+      <rect class="s-green" x="245" y="200" width="210" height="80" rx="8"/>
+      <text class="s-text-b" x="350" y="232" text-anchor="middle">Level 4</text>
+      <text class="s-text-s" x="350" y="256" text-anchor="middle">Production, multi-AZ</text>
+      <rect class="s-orange-soft" x="480" y="200" width="210" height="80" rx="8"/>
+      <text class="s-text-b" x="585" y="232" text-anchor="middle">Level 5</text>
+      <text class="s-text-s" x="585" y="256" text-anchor="middle">Scale: multi-region</text>
+      <path class="s-line" d="M220 60 H243" marker-end="url(#arr28)"/>
+      <path class="s-line" d="M455 60 H478" marker-end="url(#arr28)"/>
+      <path class="s-line" d="M585 100 V150 H115 V198" marker-end="url(#arr28)"/>
+      <path class="s-line" d="M220 240 H243" marker-end="url(#arr28)"/>
+      <path class="s-line" d="M455 240 H478" marker-end="url(#arr28)"/>
+    </svg>
+    <figcaption>Six levels. Each one produces something you can show and test before moving on.</figcaption>
+  </figure>
+
+  <h2>Level 0: requirement gathering</h2>
+  <p>No cluster yet. You collect facts in a spreadsheet and share it with developers and management.</p>
+  <ol class="steps">
+    <li><strong>List the microservices.</strong> What looks like one app to a user is many services (UI, payments, its database, its config service...).</li>
+    <li><strong>List the teams.</strong> Services are owned by teams (payments, shipping, UI). This later becomes your namespace layout.</li>
+    <li><strong>Rank by business impact:</strong> less critical, medium, important, critical. You migrate the <em>least</em> critical first, so mistakes are cheap.</li>
+    <li><strong>Measure current resource use.</strong> The most important step. Read CPU, memory and disk per service from Prometheus/Grafana, or from CloudWatch or your cloud billing dashboard. This sizes the cluster. Otherwise you may build a 50-CPU cluster you don't need.</li>
+    <li><strong>Estimate cost.</strong> Compare today's VM bill with what EKS, AKS or GKE would cost, using the provider's price calculator. Management cares about the balance of cost and performance.</li>
+  </ol>
+  <p>Sheet columns that work well: service, team, CPU, memory, business impact, onboarding priority, estimated cost, environment readiness (not ready / in progress / ready), timeline.</p>
+  <div class="callout tip"><span class="callout-title">Tip</span>Discuss the sheet with developers and managers before you start. A plan only you have seen is a plan nobody will support.</div>
+
+  <h2>Level 1: proof of concept (about 2 to 4 weeks)</h2>
+  <p>You don't yet know whether each service even runs well on Kubernetes. Prove it on a small slice.</p>
+  <ul>
+    <li>Pick <strong>15 to 20 services</strong>, a few from every impact group. Include both stateless apps and stateful ones (a database, a cache, a queue).</li>
+    <li>Create a small cluster (for example 3 control-plane and 3 worker nodes of 8 CPU / 8 GB). Managed services run the control plane for you.</li>
+    <li>Write manifests: Deployments, or StatefulSets and DaemonSets where needed, plus Services and an Ingress. For the ingress controller, the easiest start is your cloud's own (ALB on AWS).</li>
+    <li>Test traffic and ask the QE team to run their tests.</li>
+    <li>Fix what breaks. Pods in <a href="20-crashloopbackoff.html">CrashLoopBackOff</a> usually need correct config, or <strong>liveness and readiness probes</strong>.</li>
+  </ul>
+  <p>If you want to practise Level 1 on your own machine, a local cluster from <a href="26-kind.html">kind</a> works for the manifests part.</p>
+
+  <h2>Level 2: the dev cluster</h2>
+  <p>Now you build for real, using the numbers from level 0.</p>
+  <h3>Sizing</h3>
+  <ul>
+    <li><strong>Control plane:</strong> three nodes minimum (managed services handle this).</li>
+    <li><strong>Workers:</strong> at least three, with a little more CPU and memory than the total you measured. Example: you need 40 CPU and 60 GB, so use three nodes of 16 CPU / 24 GB (48 CPU / 72 GB).</li>
+    <li>A cluster can scale to thousands of nodes (the official guideline is 5000 nodes, 110 Pods per node), but more nodes means more work during upgrades, which go node by node (see <a href="16-cluster-upgrade.html">Lesson 16</a>). Don't create 10 nodes when 3 do.</li>
+  </ul>
+
+  <div class="demo" id="demo-size">
+    <div class="demo-head">Try it: cluster sizing helper</div>
+    <div class="demo-body">
+      <p>Enter the totals from your sheet and a node count. The helper adds headroom and suggests a node size.</p>
+      <div class="row">
+        <label>Total CPU needed <input type="number" id="s-cpu" value="40" min="1" max="2000"></label>
+        <label>Total memory (GB) <input type="number" id="s-mem" value="60" min="1" max="8000"></label>
+      </div>
+      <div class="row">
+        <label>Worker nodes <select id="s-n"><option>3</option><option>4</option><option>5</option><option>6</option></select></label>
+        <label>Headroom <select id="s-h"><option value="1.1">10%</option><option value="1.2" selected>20%</option><option value="1.3">30%</option></select></label>
+      </div>
+      <div class="output" id="s-out"></div>
+    </div>
+  </div>
+
+  <h3>Namespaces, quotas and limits</h3>
+  <p>Create <strong>one namespace per team</strong>. That keeps teams apart and lets you grant each developer access only to their own namespace using <a href="11-rbac.html">RBAC</a>. A UI developer has no reason to touch the payments database.</p>
+  <p>Then stop one team (or one leaky Pod) from eating the whole cluster:</p>
+  <ul>
+    <li><strong>ResourceQuota</strong> caps what a <em>namespace</em> may use in total.</li>
+    <li><strong>requests and limits</strong> (and optionally a LimitRange for defaults) cap each <em>Pod</em>.</li>
+  </ul>
+<pre><code>apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: payments-quota
+  namespace: payments
+spec:
+  hard:
+    requests.cpu: "8"
+    requests.memory: 16Gi
+    limits.cpu: "12"
+    limits.memory: 24Gi
+    pods: "60"</code></pre>
+  <p>Set each namespace's quota a little above what that team measured. Let developers and testers use the dev cluster for about a month before moving on.</p>
+
+  <h2>Level 3: staging (or QE)</h2>
+  <p>Dev is unstable by design because developers change it daily. When production has a problem you need a stable place to reproduce it. That is staging. There are two ways to build it:</p>
+  <div class="grid-2">
+    <div class="card"><h3>Same cluster, separate namespaces</h3><p>Cheaper. Namespaces like <code>dev-payments</code> and <code>stage-payments</code>. But RBAC must be strict, or developers will disturb staging too.</p></div>
+    <div class="card"><h3>A separate cluster</h3><p>Costs more but gives clean isolation. A replica of dev with more resources, closer to production. This is the better choice if the budget allows.</p></div>
+  </div>
+  <p>How many environments you need depends on risk. A bank may have dev, QE, staging, UAT and pre-prod. A small product company may need only pre-prod and prod.</p>
+
+  <h2>Level 4: production</h2>
+  <p>Setup is similar, with two big additions.</p>
+  <ul>
+    <li><strong>Multiple Availability Zones.</strong> An AZ is a data centre. Spread nodes over three of them (for example <code>1a</code>, <code>1b</code>, <code>1c</code>) so losing one doesn't take you down.</li>
+    <li><strong>Pods must spread too.</strong> Nodes in three zones don't help if all replicas land in one. Use <strong>topology spread constraints</strong>:</li>
+  </ul>
+<pre><code>spec:
+  topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: DoNotSchedule
+    labelSelector:
+      matchLabels:
+        app: payments</code></pre>
+  <p>(This goes in the Pod template of your Deployment. For other placement tools see <a href="21-scheduling.html">Lesson 21</a>.) In production you can be more generous with sizing or use autoscaling (Cluster Autoscaler or Karpenter). Also set up observability (Prometheus and Grafana), probes, and tested requests and limits before you take real traffic.</p>
+
+  <h2>Level 5: scale production</h2>
+  <p>If customers are worldwide, a US cluster is reachable from Asia but with higher latency. For high availability and speed, run <strong>several clusters</strong>, one per region (US, Asia, Europe). Each has its own Ingress. In front, put a global load balancer or DNS routing (such as Route 53 latency or geo routing), which sends each user to the nearest cluster.</p>
+  <p>It doesn't end here. Next come Helm charts (<a href="27-helm.html">Lesson 27</a>), security (<a href="23-securing-kubernetes.html">Lesson 23</a>), GitOps, service mesh and policy tools, and so on.</p>
+
+  <div class="callout interview"><span class="callout-title">Interview angle</span>"How would you migrate 100 services from VMs to Kubernetes?" Answer in levels: gather requirements and measure usage, run a proof of concept on a mixed sample, build dev, then staging, then multi-AZ production, then multi-region. Mention namespace per team, quotas, probes, and migrating least-critical services first.</div>
+
+  <h2>Check yourself</h2>
+  <div class="quiz" data-answer="2">
+    <div class="q">Which service should you migrate first?</div>
+    <div class="opts"><button>The most critical one, to prove it works</button><button>A random one</button><button>A less critical one, so mistakes are cheap</button></div>
+    <div class="explain">Rank services by business impact and start with the least critical, working up to critical ones.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">What is the difference between a ResourceQuota and Pod limits?</div>
+    <div class="opts"><button>Quota caps a whole namespace; limits cap each container or Pod</button><button>They are the same thing</button><button>Quota applies to nodes; limits apply to Services</button></div>
+    <div class="explain">Quotas keep a team within its share of the cluster; requests and limits keep each Pod within its share of that.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">You have nodes in three zones, but all replicas of one Deployment are on one node. What helps?</div>
+    <div class="opts"><button>More namespaces</button><button>Topology spread constraints</button><button>A bigger node</button></div>
+    <div class="explain">Topology spread constraints tell the scheduler to place replicas across zones.</div>
+  </div>
+
+  <section class="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li>Migrate in levels: requirements, proof of concept, dev, staging, production, scale.</li>
+      <li>Measure real CPU, memory and cost from your monitoring before sizing anything.</li>
+      <li>Prove a mixed sample of 15 to 20 services before building environments.</li>
+      <li>Namespace per team, with RBAC, ResourceQuota and Pod limits for fair sharing.</li>
+      <li>Production needs multiple zones (and spread constraints); multi-region means several clusters behind DNS or a global load balancer.</li>
+      <li>Share your plan with developers and management.</li>
+    </ul>
+  </section>
+</main>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var cpu = $("s-cpu"), mem = $("s-mem"), n = $("s-n"), h = $("s-h"), out = $("s-out");
+  function render() {
+    var c = Math.max(1, +cpu.value || 1), m = Math.max(1, +mem.value || 1), nodes = +n.value, f = +h.value;
+    var perCpu = Math.ceil(c * f / nodes), perMem = Math.ceil(m * f / nodes);
+    var podsNote = nodes * 110;
+    out.className = "output ok";
+    out.innerHTML = "Suggested: <b>" + nodes + " nodes</b> of <b>" + perCpu + " CPU / " + perMem + " GB</b> each.<br>Total capacity: " +
+      (perCpu * nodes) + " CPU, " + (perMem * nodes) + " GB (needed " + c + " CPU, " + m + " GB).<br>Pod ceiling at 110 per node: " + podsNote +
+      ".<br><span style='color:var(--text-2)'>Round up to the nearest instance size your provider offers.</span>";
+  }
+  [cpu, mem].forEach(function (e) { e.addEventListener("input", render); });
+  [n, h].forEach(function (e) { e.addEventListener("change", render); });
+  render();
+})();
+</script>
+</body>
+</html>
