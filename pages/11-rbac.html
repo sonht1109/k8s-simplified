@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RBAC: Who Can Do What · Kubernetes Simplified</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/site.js"></script>
+<style>
+  .sim-row { display: grid; grid-template-columns: 1fr; gap: 8px; margin: 8px 0; }
+  @media (min-width: 560px) { .sim-row { grid-template-columns: repeat(4, 1fr); } }
+  .sim-row label { font-size: 13px; color: var(--text-2); display: block; }
+  .sim-row select { width: 100%; }
+</style>
+</head>
+<body data-page="11">
+<main class="wrap">
+  <header class="page-head">
+    <h1>RBAC: Who Can Do What</h1>
+    <p class="lead">On your laptop cluster you are the boss. In a company, many people and many apps share one cluster, and each should only touch what they need. RBAC (Role-Based Access Control) is how Kubernetes decides who may do what.</p>
+  </header>
+
+  <div class="xref-box"><div>RBAC is enforced by the API server, the front door of the cluster. See <a href="02-architecture.html">Lesson 2: Architecture</a> if you need a refresher on it.</div></div>
+
+  <h2>Why RBAC matters</h2>
+  <p>Imagine a cluster shared by developers, QA engineers and DevOps engineers. You do not want a QA engineer deleting things in the <code>kube-system</code> namespace, or a buggy app wiping out Deployments. Because RBAC is directly about security, a small mistake can be both dangerous and hard to debug.</p>
+  <p>RBAC answers two questions, for two kinds of "callers":</p>
+  <ul>
+    <li><strong>Users</strong> (humans): what may a developer, a tester or an admin do?</li>
+    <li><strong>Service accounts</strong> (programs running in Pods): what may this application do when it talks to the API server?</li>
+  </ul>
+
+  <h2>Authentication comes first, then authorization</h2>
+  <p>Every request to the API server goes through two checks in order:</p>
+  <ol class="steps">
+    <li><strong>Authentication</strong> asks "Who are you?" (a user, a group or a service account).</li>
+    <li><strong>Authorization</strong> asks "Are you allowed to do this?" RBAC is the most common way to answer.</li>
+  </ol>
+  <p>RBAC only handles step 2. It never proves who you are.</p>
+
+  <h2>Where do users come from?</h2>
+  <p>This surprises many beginners: <strong>Kubernetes has no "create user" command.</strong> There is nothing like <code>useradd</code>. Instead, Kubernetes hands user management to an <strong>identity provider</strong>, just like an app that lets you "Log in with Google" without creating a new account.</p>
+  <ul>
+    <li>On EKS, you can map AWS IAM users and groups to Kubernetes.</li>
+    <li>On OpenShift or other platforms, the provider could be LDAP, Okta, GitHub (often through a broker such as Keycloak), or any single sign-on system.</li>
+    <li>The cluster receives the person's username and group names from the provider, and RBAC rules refer to those names.</li>
+  </ul>
+  <p>Service accounts are different: they <em>are</em> Kubernetes objects, and anyone with permission can create one.</p>
+
+  <h2>Service accounts</h2>
+  <p>A <strong>ServiceAccount</strong> is an identity for a Pod. When your app calls the API server (to read a ConfigMap, list Pods, and so on), it proves who it is with its service account.</p>
+  <ul>
+    <li>Every namespace has a <code>default</code> service account. A Pod that does not name one gets <code>default</code> automatically.</li>
+    <li>For real apps, create a dedicated one with only the permissions that app needs.</li>
+  </ul>
+<pre><code>apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: reader-sa
+  namespace: dev</code></pre>
+<pre><code>apiVersion: v1
+kind: Pod
+metadata:
+  name: my-app
+  namespace: dev
+spec:
+  serviceAccountName: reader-sa
+  containers:
+  - name: app
+    image: nginx</code></pre>
+
+  <h2>The building blocks</h2>
+  <p>Permissions are built from two ideas: a <strong>rule set</strong> (what is allowed) and a <strong>binding</strong> (who gets it).</p>
+  <div class="table-wrap"><table>
+    <tr><th>Object</th><th>Scope</th><th>What it does</th></tr>
+    <tr><td><strong>Role</strong></td><td>One namespace</td><td>Lists allowed actions on resources in that namespace</td></tr>
+    <tr><td><strong>ClusterRole</strong></td><td>Whole cluster</td><td>Same, but also covers cluster-wide resources (like Nodes) or all namespaces</td></tr>
+    <tr><td><strong>RoleBinding</strong></td><td>One namespace</td><td>Attaches a Role (or ClusterRole) to users, groups or service accounts in that namespace</td></tr>
+    <tr><td><strong>ClusterRoleBinding</strong></td><td>Whole cluster</td><td>Attaches a ClusterRole to subjects everywhere</td></tr>
+  </table></div>
+
+  <div class="callout analogy"><span class="callout-title">Think of it like…</span>A <strong>Role</strong> is a key card design ("opens the supply room and the printer room"). A <strong>RoleBinding</strong> is the act of handing that card to a specific person. A key card with nobody holding it opens nothing, and a person with no card opens nothing either. You need both. If you know AWS, a Role is close to an IAM policy.</div>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 680 220" role="img" aria-label="A subject (user, group or service account) is linked by a RoleBinding to a Role, which lists verbs on resources.">
+      <defs><marker id="arr11" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" style="fill:var(--text-2)"/></marker></defs>
+      <rect class="s-blue" x="15" y="40" width="170" height="90" rx="8"/>
+      <text class="s-text-b" x="100" y="70" text-anchor="middle">Subject</text>
+      <text class="s-text-s" x="100" y="92" text-anchor="middle">user, group or</text>
+      <text class="s-text-s" x="100" y="110" text-anchor="middle">service account</text>
+      <rect class="s-orange-soft" x="255" y="55" width="170" height="60" rx="8"/>
+      <text class="s-text-b" x="340" y="82" text-anchor="middle">RoleBinding</text>
+      <text class="s-text-s" x="340" y="102" text-anchor="middle">"give X this role"</text>
+      <rect class="s-green" x="495" y="40" width="170" height="90" rx="8"/>
+      <text class="s-text-b" x="580" y="70" text-anchor="middle">Role</text>
+      <text class="s-text-s" x="580" y="92" text-anchor="middle">verbs: get, list</text>
+      <text class="s-text-s" x="580" y="110" text-anchor="middle">on: pods</text>
+      <path class="s-line" d="M255 85 H187" marker-end="url(#arr11)"/>
+      <path class="s-line" d="M425 85 H493" marker-end="url(#arr11)"/>
+      <text class="s-text-s" x="340" y="170" text-anchor="middle">binding points at both sides: subjects + role</text>
+    </svg>
+    <figcaption>A binding connects who (subject) with what (role).</figcaption>
+  </figure>
+
+  <h2>Writing a Role and a RoleBinding</h2>
+  <p>A Role contains <strong>rules</strong>. Each rule says which API groups, resources and verbs are allowed. Everything not listed is denied; RBAC has only allow rules.</p>
+<pre><code>apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pod-reader
+  namespace: dev
+rules:
+- apiGroups: [""]          # "" means the core group (Pods, ConfigMaps, Secrets...)
+  resources: ["pods", "pods/log"]
+  verbs: ["get", "list", "watch"]</code></pre>
+  <p>Now bind it to a user and a service account:</p>
+<pre><code>apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: read-pods
+  namespace: dev
+subjects:
+- kind: User
+  name: priya
+  apiGroup: rbac.authorization.k8s.io
+- kind: ServiceAccount
+  name: reader-sa
+  namespace: dev
+roleRef:
+  kind: Role
+  name: pod-reader
+  apiGroup: rbac.authorization.k8s.io</code></pre>
+  <p>Common verbs are <code>get</code>, <code>list</code>, <code>watch</code>, <code>create</code>, <code>update</code>, <code>patch</code> and <code>delete</code>. For a <strong>ClusterRole</strong> and <strong>ClusterRoleBinding</strong>, the YAML looks the same: drop <code>namespace</code> and change the <code>kind</code>.</p>
+
+  <div class="callout tip"><span class="callout-title">Tip</span>A ClusterRole can be reused inside one namespace. Bind it with a <em>RoleBinding</em> and its power is limited to that namespace. Kubernetes' built-in <code>view</code>, <code>edit</code> and <code>admin</code> ClusterRoles are used this way all the time.</div>
+
+  <h2>Testing permissions with kubectl auth can-i</h2>
+  <p>You do not need to log in as someone to test their access. Ask the API server:</p>
+<pre><code># Can I (the current user) delete deployments in dev?
+kubectl auth can-i delete deployments -n dev
+
+# Can user priya list pods in dev? (needs admin rights to impersonate)
+kubectl auth can-i list pods -n dev --as priya
+
+# Can the service account read secrets?
+kubectl auth can-i get secrets -n dev \
+  --as system:serviceaccount:dev:reader-sa
+
+# Everything I may do in a namespace
+kubectl auth can-i --list -n dev</code></pre>
+  <p>The answer is simply <code>yes</code> or <code>no</code>. This is the quickest way to debug a "forbidden" error.</p>
+
+  <div class="demo" id="demo-rbac">
+    <div class="demo-head">Try it: can-i simulator</div>
+    <div class="demo-body">
+      <p>Two bindings exist in the <code>dev</code> namespace: <code>priya</code> and <code>reader-sa</code> have the <code>pod-reader</code> Role (get, list, watch on pods). The user <code>admin</code> has a ClusterRoleBinding to <code>cluster-admin</code>. Pick a request and see what the API server says.</p>
+      <div class="sim-row">
+        <div><label for="rb-who">Who</label><select id="rb-who"><option value="priya">user priya</option><option value="sa">sa reader-sa</option><option value="admin">user admin</option><option value="nobody">user sam (no binding)</option></select></div>
+        <div><label for="rb-verb">Verb</label><select id="rb-verb"><option>get</option><option>list</option><option>create</option><option>delete</option></select></div>
+        <div><label for="rb-res">Resource</label><select id="rb-res"><option value="pods">pods</option><option value="secrets">secrets</option><option value="deployments">deployments</option></select></div>
+        <div><label for="rb-ns">Namespace</label><select id="rb-ns"><option>dev</option><option>prod</option></select></div>
+      </div>
+      <div class="row"><button class="btn primary" id="rb-go">Check</button></div>
+      <div class="output" id="rb-out">Choose a request, then press <b>Check</b>.</div>
+    </div>
+  </div>
+
+  <div class="callout warn"><span class="callout-title">Watch out</span>Do not give <code>cluster-admin</code> to everyone, and do not grant <code>get secrets</code> casually. A person who can read Secrets can read every password in that namespace. Follow <strong>least privilege</strong>: start with nothing and add only what is needed. More hardening ideas are in <a href="23-securing-kubernetes.html">Lesson 23: Securing Kubernetes</a>, and Secrets themselves are covered in <a href="13-configmaps-secrets-project.html">Lesson 13</a>.</div>
+
+  <div class="callout interview"><span class="callout-title">Interview angle</span>"What is the difference between a Role and a ClusterRole?" A Role is namespaced; a ClusterRole is cluster-wide and can also cover non-namespaced resources like Nodes. "Where do users come from?" Kubernetes does not store users; an external identity provider supplies them, while service accounts are native objects.</div>
+
+  <h2>Check yourself</h2>
+  <div class="quiz" data-answer="2">
+    <div class="q">You created a Role that allows listing Pods, but the user still gets "forbidden". What is most likely missing?</div>
+    <div class="opts"><button>A ClusterRole</button><button>A new namespace</button><button>A RoleBinding that attaches the Role to that user</button></div>
+    <div class="explain">A Role only describes permissions. Nobody has them until a RoleBinding links the Role to a subject.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">How do you create a human user in Kubernetes?</div>
+    <div class="opts"><button>kubectl create user</button><button>You don't. An external identity provider (LDAP, IAM, SSO...) supplies users.</button><button>With a ServiceAccount YAML</button></div>
+    <div class="explain">Kubernetes offloads user management. Only service accounts are created inside the cluster.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">Which command checks whether a service account may read Secrets?</div>
+    <div class="opts"><button>kubectl auth can-i get secrets --as system:serviceaccount:dev:reader-sa -n dev</button><button>kubectl get role reader-sa</button><button>kubectl describe secret --as reader-sa</button></div>
+    <div class="explain"><code>auth can-i</code> with <code>--as</code> impersonates the subject and returns yes or no.</div>
+  </div>
+
+  <section class="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li>RBAC is the authorization step: it decides what an already-identified user or service account may do.</li>
+      <li>Kubernetes does not manage human users; identity providers do. Service accounts are native objects used by Pods.</li>
+      <li><strong>Role</strong> (namespace) or <strong>ClusterRole</strong> (cluster) = the permissions. <strong>RoleBinding</strong> or <strong>ClusterRoleBinding</strong> = who gets them.</li>
+      <li>RBAC has only allow rules; anything not granted is denied.</li>
+      <li>Use dedicated service accounts and least privilege; test with <code>kubectl auth can-i</code>.</li>
+    </ul>
+  </section>
+</main>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  $("rb-go").addEventListener("click", function () {
+    var who = $("rb-who").value, verb = $("rb-verb").value, res = $("rb-res").value, ns = $("rb-ns").value;
+    var ok = false, why = "";
+    if (who === "admin") {
+      ok = true; why = "ClusterRoleBinding to cluster-admin allows every verb on every resource in every namespace.";
+    } else if (who === "nobody") {
+      why = "No RoleBinding or ClusterRoleBinding mentions this user, so nothing is allowed.";
+    } else if (ns !== "dev") {
+      why = "The RoleBinding exists only in the dev namespace. In " + ns + " this subject has no permissions.";
+    } else if (res !== "pods") {
+      why = "The pod-reader Role covers pods only, not " + res + ".";
+    } else if (["get", "list"].indexOf(verb) < 0) {
+      why = "The pod-reader Role allows get, list and watch only, not " + verb + ".";
+    } else {
+      ok = true; why = "Role pod-reader (via RoleBinding read-pods) allows " + verb + " on pods in dev.";
+    }
+    var out = $("rb-out");
+    out.className = "output " + (ok ? "ok" : "bad");
+    out.innerHTML = "<b>" + (ok ? "yes" : "no") + "</b> &mdash; " + why;
+  });
+})();
+</script>
+</body>
+</html>
