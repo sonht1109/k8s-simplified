@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Introduction to Kubernetes · Kubernetes Simplified</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/site.js"></script>
+<style>
+  .sim-box { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin: 10px 0; background: var(--surface-2); }
+  .hosts { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+  .host { flex: 1 1 130px; border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; min-height: 70px; }
+  .host.dead { opacity: .45; border-style: dashed; }
+  .host b { display: block; font-size: 13px; margin-bottom: 4px; }
+  .ctr { display: inline-block; font: 12px var(--mono); padding: 2px 6px; margin: 2px; border-radius: 4px; border: 1px solid var(--border); background: var(--surface); }
+</style>
+</head>
+<body data-page="01">
+<main class="wrap">
+  <header class="page-head">
+    <h1>Introduction to Kubernetes</h1>
+    <p class="lead">Kubernetes is the system that runs and looks after containers for you, across many machines. You'll learn what problems it solves, what it gives you out of the box, and how it differs from Docker.</p>
+  </header>
+
+  <h2>Quick recap: containers</h2>
+  <p>A <strong>container</strong> packages an application together with everything it needs to run (libraries, runtime, settings). Unlike a virtual machine, it does not carry a whole operating system, so it starts in seconds and uses very little memory. Docker is the best-known tool for building and running containers.</p>
+  <p>Containers solved the "it works on my machine" problem, and they suit <strong>microservices</strong> (many small services instead of one big app). But once a company runs <em>hundreds or thousands</em> of them, new problems appear. That is where Kubernetes comes in. This lesson assumes you already know basic Docker and containers.</p>
+  <div class="callout"><span class="callout-title">Note</span>Kubernetes is a big topic, but the first step is the easy one: understanding <em>why</em> it exists. If you get the four problems below, you already have the foundation, and the rest builds on it. Job listings for DevOps roles almost always mention Kubernetes, so it is worth the effort.</div>
+
+  <h2>What is Kubernetes?</h2>
+  <p><strong>Kubernetes</strong> (often written <strong>K8s</strong>, because there are 8 letters between the K and the s) is an open-source <strong>container orchestration platform</strong>. The one-line answer for an interview: <em>Docker is a container platform; Kubernetes is a container orchestration platform.</em> "Orchestration" means one system decides where containers run, keeps them healthy, and adjusts them as needs change.</p>
+  <p>It came out of Google, which had run containers at enormous scale with an internal, closed-source system called <strong>Borg</strong>. Kubernetes is the open-source, enterprise-grade platform built from those lessons. It is now backed by a large community under the Cloud Native Computing Foundation (CNCF), which also hosts tools like Prometheus.</p>
+  <div class="callout analogy"><span class="callout-title">Think of it like…</span>An orchestra conductor. The musicians (containers) know how to play, but someone must decide who plays when, replace a musician who leaves, and add more players for a louder passage. Kubernetes is that conductor.</div>
+
+  <h2>Problems with plain Docker</h2>
+  <p>Containers are <strong>ephemeral</strong>: short-lived, they can die and be replaced at any time. Running them with Docker on a single server works well for learning. In production, four problems show up.</p>
+  <div class="grid-2">
+    <div class="card"><h3>1. Single host</h3><p>All containers share one machine. Say you run 100 containers and container 1 suddenly eats a lot of memory. The Linux kernel must free memory by killing some process, so container 100, which has nothing to do with container 1, may die or never start. If the machine dies, everything dies.</p></div>
+    <div class="card"><h3>2. No auto-healing</h3><p>If a container crashes or is killed, the app is unreachable until a person notices and restarts it. On a laptop that's fine; with 10,000 containers nobody can keep running <code>docker ps</code> to check, and customers shouldn't be your alarm system.</p></div>
+    <div class="card"><h3>3. No auto-scaling</h3><p>Imagine a streaming site where a hit movie is released and users jump from 10,000 to a million. Someone must start more copies by hand <em>and</em> set up a load balancer, because users only know one URL and can't be told "you go to this IP, you go to that one."</p></div>
+    <div class="card"><h3>4. No enterprise features</h3><p>Docker is deliberately minimal. A company app needs a load balancer, firewall-style controls (allow or block certain clients, protect against denial-of-service attacks), scaling, healing and an API gateway. Plain Docker offers none of these by default.</p></div>
+  </div>
+
+  <h2>How Kubernetes solves them</h2>
+  <figure class="diagram">
+    <svg viewBox="0 0 700 250" role="img" aria-label="Left: one Docker host with containers, a single point of failure. Right: a Kubernetes cluster of three nodes with containers spread across them and a control plane managing them.">
+      <defs><marker id="arr1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" style="fill:var(--text-2)"/></marker></defs>
+      <rect class="s-box" x="10" y="30" width="190" height="190" rx="10"/>
+      <text class="s-text-b" x="105" y="56" text-anchor="middle">Docker: one host</text>
+      <rect class="s-blue" x="30" y="76" width="70" height="36" rx="6"/><text class="s-text" x="65" y="99" text-anchor="middle">app A</text>
+      <rect class="s-blue" x="110" y="76" width="70" height="36" rx="6"/><text class="s-text" x="145" y="99" text-anchor="middle">app B</text>
+      <rect class="s-blue" x="30" y="124" width="70" height="36" rx="6"/><text class="s-text" x="65" y="147" text-anchor="middle">app C</text>
+      <text class="s-text-s" x="105" y="195" text-anchor="middle">host dies = all down</text>
+      <rect class="s-box2" x="240" y="10" width="450" height="52" rx="10"/>
+      <text class="s-text-b" x="465" y="42" text-anchor="middle">Control plane (the conductor)</text>
+      <rect class="s-green" x="240" y="100" width="136" height="130" rx="10"/>
+      <rect class="s-green" x="396" y="100" width="136" height="130" rx="10"/>
+      <rect class="s-green" x="552" y="100" width="138" height="130" rx="10"/>
+      <text class="s-text-b" x="308" y="122" text-anchor="middle">Node 1</text>
+      <text class="s-text-b" x="464" y="122" text-anchor="middle">Node 2</text>
+      <text class="s-text-b" x="621" y="122" text-anchor="middle">Node 3</text>
+      <rect class="s-blue" x="256" y="140" width="50" height="30" rx="5"/><text class="s-text" x="281" y="160" text-anchor="middle">A</text>
+      <rect class="s-blue" x="316" y="140" width="50" height="30" rx="5"/><text class="s-text" x="341" y="160" text-anchor="middle">B</text>
+      <rect class="s-blue" x="412" y="140" width="50" height="30" rx="5"/><text class="s-text" x="437" y="160" text-anchor="middle">A</text>
+      <rect class="s-blue" x="472" y="140" width="50" height="30" rx="5"/><text class="s-text" x="497" y="160" text-anchor="middle">C</text>
+      <rect class="s-blue" x="568" y="140" width="50" height="30" rx="5"/><text class="s-text" x="593" y="160" text-anchor="middle">B</text>
+      <rect class="s-blue" x="628" y="140" width="50" height="30" rx="5"/><text class="s-text" x="653" y="160" text-anchor="middle">C</text>
+      <path class="s-line" d="M465 62 V98" marker-end="url(#arr1)"/>
+      <text class="s-text-s" x="465" y="205" text-anchor="middle">copies spread over many machines</text>
+    </svg>
+    <figcaption>Docker on one host versus a Kubernetes cluster, where copies of each app are spread across several machines.</figcaption>
+  </figure>
+  <ul>
+    <li><strong>Cluster, not a single host.</strong> Kubernetes joins many machines (called <strong>nodes</strong>) into one <strong>cluster</strong>, typically one or more control-plane ("master") nodes plus several worker nodes. If a faulty app is hurting its neighbours on one node, Kubernetes can place the affected Pod on a different node. (You <em>can</em> run a one-node cluster, but that's for learning, not production.)</li>
+    <li><strong>Auto-scaling.</strong> Everything in Kubernetes is described in YAML files. To handle tomorrow's festival traffic you change <code>replicas: 1</code> to <code>replicas: 10</code> and apply it (manual scaling). Or you use the <strong>Horizontal Pod Autoscaler (HPA)</strong>: "when CPU load passes 80%, add another copy," and it keeps adding as load grows from thousands to millions.</li>
+    <li><strong>Self-healing.</strong> A ReplicaSet (the newer name for the old "replication controller") keeps the requested number of copies alive. When Kubernetes sees a container is failing it rolls out a replacement, often before the old one is fully gone, so users barely notice. (In Kubernetes you mostly deal with <strong>Pods</strong>, which wrap containers. More in <a href="04-pods.html">Lesson 4</a>.)</li>
+    <li><strong>Load balancing and service discovery.</strong> Traffic is spread across the copies, and apps find each other by name instead of by changing IP addresses (see <a href="06-services-intro.html">Lesson 6: Services</a>).</li>
+    <li><strong>Safe updates.</strong> New versions roll out gradually, and you can roll back if something breaks (see <a href="05-deployments-replicasets.html">Lesson 5: Deployments</a>).</li>
+  </ul>
+  <p>Kubernetes also fills the "enterprise" gap, but be honest about it: it does not solve everything out of the box. By default it only gives basic load balancing (round robin, via Services and kube-proxy). Instead it is <strong>extensible</strong>: with custom resources and custom controllers, other projects plug in more. The best-known example is <strong>ingress controllers</strong>, where a load balancer like NGINX plugs in to give advanced routing. That openness, plus the CNCF community improving it every day, is why adoption keeps growing.</p>
+  <p>The idea behind all of it is <strong>desired state</strong>: you describe what you want, and Kubernetes keeps working until reality matches. Try it below.</p>
+
+  <div class="demo" id="demo-intro">
+    <div class="demo-head">Try it: what happens when things go wrong?</div>
+    <div class="demo-body">
+      <p>Pick a way of running 3 copies of an app, then cause trouble.</p>
+      <div class="row">
+        <button class="btn active" id="in-docker" aria-pressed="true">One Docker host</button>
+        <button class="btn" id="in-k8s" aria-pressed="false">Kubernetes cluster</button>
+      </div>
+      <div class="hosts" id="in-hosts"></div>
+      <div class="row">
+        <button class="btn" id="in-kill">Crash a container</button>
+        <button class="btn" id="in-node">Kill a machine</button>
+        <button class="btn" id="in-reset">Reset</button>
+      </div>
+      <div class="output" id="in-out">Choose a mode and press a button.</div>
+    </div>
+  </div>
+
+  <h2>Features at a glance</h2>
+  <div class="table-wrap"><table>
+    <tr><th>Feature</th><th>What it means for you</th></tr>
+    <tr><td>Self-healing</td><td>Failed containers are replaced without human help</td></tr>
+    <tr><td>Scaling</td><td>Change the number of copies by hand or automatically</td></tr>
+    <tr><td>Load balancing</td><td>Traffic is shared across healthy copies</td></tr>
+    <tr><td>Rolling updates and rollbacks</td><td>Release new versions with no downtime, undo if needed</td></tr>
+    <tr><td>Configuration and secrets</td><td>Keep settings and passwords outside your images</td></tr>
+    <tr><td>Storage</td><td>Attach persistent disks to containers</td></tr>
+    <tr><td>Extensibility</td><td>Add your own object types and tools</td></tr>
+    <tr><td>Runs anywhere</td><td>Laptop, your data centre, or any cloud</td></tr>
+  </table></div>
+
+  <h2>Kubernetes vs Docker</h2>
+  <p>This is not a fight: they work at different levels. <strong>Docker</strong> builds and runs <em>one container</em> on <em>one machine</em>. <strong>Kubernetes</strong> manages <em>many containers</em> across <em>many machines</em>. Kubernetes still needs a container runtime on every node to actually run containers (today usually containerd; Docker images work fine).</p>
+  <div class="table-wrap"><table>
+    <tr><th></th><th>Docker alone</th><th>Kubernetes</th></tr>
+    <tr><td>Scope</td><td>Single host</td><td>Cluster of nodes</td></tr>
+    <tr><td>Restart a crashed app</td><td>Manual (or simple restart policy)</td><td>Automatic, and rescheduled on another node if needed</td></tr>
+    <tr><td>Scaling</td><td>Manual</td><td>Manual or automatic</td></tr>
+    <tr><td>Updates</td><td>Stop and start</td><td>Rolling, with rollback</td></tr>
+    <tr><td>Learning curve</td><td>Gentle</td><td>Steeper, but worth it</td></tr>
+  </table></div>
+  <div class="callout tip"><span class="callout-title">Tip</span>Kubernetes is not "hard magic." It is a set of building blocks, each with a simple job. The next lessons go through them one by one, starting with <a href="02-architecture.html">the architecture</a>.</div>
+  <div class="callout interview"><span class="callout-title">Interview angle</span>"What is the difference between Docker and Kubernetes?" Short answer: container platform vs container orchestration platform. Then give the four problems: single host, no auto-healing, no auto-scaling, no enterprise features (load balancer, firewall rules, API gateway), and how Kubernetes answers each. Also be ready to say Docker alone isn't used for production.</div>
+
+  <h2>Check yourself</h2>
+  <div class="quiz" data-answer="1">
+    <div class="q">A container in your Kubernetes cluster crashes. What happens?</div>
+    <div class="opts"><button>It stays down until you restart it</button><button>Kubernetes notices and starts a replacement</button><button>The whole cluster restarts</button></div>
+    <div class="explain">Self-healing: Kubernetes compares the desired state (3 copies) with reality (2 copies) and creates a new one.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">Which sentence describes the relationship between Docker and Kubernetes best?</div>
+    <div class="opts"><button>Kubernetes replaces containers entirely</button><button>Docker manages clusters; Kubernetes builds images</button><button>Docker runs containers on one machine; Kubernetes orchestrates containers across many machines</button></div>
+    <div class="explain">They work at different levels. Kubernetes orchestrates containers over a cluster.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">What does "desired state" mean?</div>
+    <div class="opts"><button>You describe what you want and Kubernetes works to make reality match</button><button>The state a container is in when it starts</button><button>A backup of your cluster</button></div>
+    <div class="explain">Kubernetes is declarative: you state the goal, and it keeps reconciling.</div>
+  </div>
+
+  <section class="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li>Kubernetes (K8s) is an open-source platform that orchestrates containers across a cluster of machines.</li>
+      <li>It fixes Docker's production gaps: single host, no auto-healing, no auto-scaling, no enterprise features.</li>
+      <li>You declare a <strong>desired state</strong>, and Kubernetes keeps reality matching it.</li>
+      <li>Key features: self-healing, scaling, load balancing, rolling updates, config and storage handling.</li>
+      <li>Docker runs containers; Kubernetes manages them at scale. They complement each other.</li>
+    </ul>
+  </section>
+</main>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var mode = "docker", hosts, out = $("in-out");
+  function reset() {
+    hosts = mode === "docker"
+      ? [{ name: "Host 1", alive: true, c: ["A", "B", "C"] }]
+      : [{ name: "Node 1", alive: true, c: ["A"] }, { name: "Node 2", alive: true, c: ["B"] }, { name: "Node 3", alive: true, c: ["C"] }];
+    draw();
+  }
+  function draw() {
+    $("in-hosts").innerHTML = hosts.map(function (h) {
+      return '<div class="host' + (h.alive ? "" : " dead") + '"><b>' + h.name + (h.alive ? "" : " (down)") + "</b>" +
+        h.c.map(function (x) { return '<span class="ctr">app-' + x + "</span>"; }).join("") + "</div>";
+    }).join("");
+  }
+  function setMode(m) {
+    mode = m;
+    $("in-docker").classList.toggle("active", m === "docker"); $("in-docker").setAttribute("aria-pressed", m === "docker");
+    $("in-k8s").classList.toggle("active", m === "k8s"); $("in-k8s").setAttribute("aria-pressed", m === "k8s");
+    out.className = "output"; out.textContent = "Choose a button to cause trouble."; reset();
+  }
+  function total() { return hosts.reduce(function (n, h) { return n + h.c.length; }, 0); }
+  $("in-docker").onclick = function () { setMode("docker"); };
+  $("in-k8s").onclick = function () { setMode("k8s"); };
+  $("in-reset").onclick = function () { setMode(mode); };
+  $("in-kill").onclick = function () {
+    var h = hosts.filter(function (x) { return x.alive && x.c.length; })[0];
+    if (!h) { out.className = "output bad"; out.textContent = "Nothing is running."; return; }
+    var gone = h.c.pop();
+    if (mode === "docker") { out.className = "output bad"; out.textContent = "app-" + gone + " crashed and stays down. Someone must notice and restart it. Running: " + total() + " of 3."; }
+    else {
+      var alive = hosts.filter(function (x) { return x.alive; });
+      alive.sort(function (a, b) { return a.c.length - b.c.length; })[0].c.push(gone);
+      out.className = "output ok"; out.textContent = "app-" + gone + " crashed. Kubernetes saw 2 of 3 copies and started a replacement. Running: " + total() + " of 3.";
+    }
+    draw();
+  };
+  $("in-node").onclick = function () {
+    var h = hosts.filter(function (x) { return x.alive; })[0];
+    if (!h) { out.className = "output bad"; out.textContent = "No machines left."; return; }
+    var lost = h.c.slice(); h.c = []; h.alive = false;
+    if (mode === "docker") { out.className = "output bad"; out.textContent = "The only host died. Every container is gone. Downtime until a human fixes it."; }
+    else {
+      var alive = hosts.filter(function (x) { return x.alive; });
+      if (!alive.length) { out.className = "output bad"; out.textContent = "All nodes are down: nowhere to run."; }
+      else {
+        lost.forEach(function (x) { alive.sort(function (a, b) { return a.c.length - b.c.length; })[0].c.push(x); });
+        out.className = "output ok"; out.textContent = h.name + " died. Its containers were rescheduled on the remaining nodes. Running: " + total() + " of 3.";
+      }
+    }
+    draw();
+  };
+  reset();
+})();
+</script>
+</body>
+</html>
