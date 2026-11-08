@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Custom Resources &amp; Controllers · Kubernetes Simplified</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/site.js"></script>
+<style>
+  .pods { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; min-height: 40px; }
+  .pod { width: 44px; height: 36px; border-radius: 6px; background: var(--green-soft, var(--surface-2)); border: 2px solid var(--green); display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; }
+  .stat { font: 14px/1.5 var(--mono); margin: 4px 0; }
+</style>
+</head>
+<body data-page="12">
+<main class="wrap">
+  <header class="page-head">
+    <h1>Custom Resources &amp; Controllers</h1>
+    <p class="lead">Kubernetes ships with objects like Pod, Deployment and Service. But you can teach it brand-new object types and write a program that makes them do real work. That is how tools like Istio and Argo CD plug into Kubernetes.</p>
+  </header>
+
+  <h2>The problem: built-in objects are not enough</h2>
+  <p>Out of the box Kubernetes knows a fixed list of resource types (Pod, Deployment, Service, ConfigMap, Secret and more). Suppose a project wants to add something Kubernetes does not offer, such as GitOps deployments, a service mesh, or security scanning. It cannot just tell users to "write some YAML" because Kubernetes would reject unknown kinds.</p>
+  <p>The answer is to <strong>extend the Kubernetes API</strong>. This takes three pieces that work together.</p>
+
+  <div class="grid-2">
+    <div class="card"><h3>1. CRD</h3><p><strong>Custom Resource Definition.</strong> The "blueprint". It tells the API server a new type exists and which fields it may have.</p></div>
+    <div class="card"><h3>2. CR</h3><p><strong>Custom Resource.</strong> One actual object of that new type, written by a user, like one Deployment is an instance of the Deployment type.</p></div>
+  </div>
+  <div class="card"><h3>3. Custom controller</h3><p>A program running in the cluster that <strong>watches</strong> those custom resources and <strong>acts</strong> on them. Without it, the resource is just stored data.</p></div>
+
+  <div class="callout analogy"><span class="callout-title">Think of it like…</span>A CRD is a new <strong>form template</strong> pinned up at the town office. A custom resource is one <strong>filled-in form</strong>. The controller is the <strong>clerk</strong> who reads submitted forms and does the work. Forms without a clerk just pile up.</div>
+
+  <h2>Comparing with a built-in object</h2>
+  <p>The easiest way to understand all this is to compare it with something you already know.</p>
+  <div class="table-wrap"><table>
+    <tr><th></th><th>Built-in (Deployment)</th><th>Custom (e.g. Istio VirtualService)</th></tr>
+    <tr><td>Definition of the type</td><td>Already inside Kubernetes</td><td>You install a <strong>CRD</strong></td></tr>
+    <tr><td>Your object</td><td>A Deployment YAML</td><td>A <strong>custom resource</strong> YAML</td></tr>
+    <tr><td>Validation</td><td>API server checks it against the built-in schema</td><td>API server checks it against the CRD's schema</td></tr>
+    <tr><td>Who acts on it</td><td>Built-in Deployment controller</td><td>A <strong>custom controller</strong> you install</td></tr>
+  </table></div>
+  <p>Remember: if you add an unknown field to a Deployment, the API server complains that the field is unknown. A CRD gives custom objects the same kind of checking.</p>
+
+  <h2>The CRD</h2>
+  <p>A CRD is just a YAML file. Here is a small one that defines a <code>Website</code> type:</p>
+<pre><code>apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: websites.example.com        # must be plural.group
+spec:
+  group: example.com
+  scope: Namespaced
+  names:
+    kind: Website
+    plural: websites
+    singular: website
+    shortNames: [ws]
+  versions:
+  - name: v1
+    served: true
+    storage: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            properties:
+              image:
+                type: string
+              replicas:
+                type: integer
+                minimum: 1</code></pre>
+  <p>After <code>kubectl apply -f crd.yaml</code>, the API server has a new endpoint and <code>kubectl</code> understands the new type:</p>
+<pre><code>kubectl get crds
+kubectl api-resources | grep website</code></pre>
+
+  <h2>The custom resource</h2>
+  <p>Now users can create objects of that type, validated against the schema above:</p>
+<pre><code>apiVersion: example.com/v1
+kind: Website
+metadata:
+  name: shop
+spec:
+  image: nginx:1.27
+  replicas: 3</code></pre>
+<pre><code>kubectl apply -f shop.yaml
+kubectl get websites        # or: kubectl get ws</code></pre>
+  <p>At this point Kubernetes simply <em>stores</em> the object in etcd. Nothing runs. It is like creating an <a href="09-ingress-tls.html">Ingress</a> with no ingress controller: the rule exists but nobody enforces it.</p>
+
+  <h2>The controller and the reconcile loop</h2>
+  <p>A controller's whole job is one repeating idea, the <strong>reconcile loop</strong>:</p>
+  <ol class="steps">
+    <li><strong>Observe</strong> the desired state (what the custom resource says).</li>
+    <li><strong>Compare</strong> it with the actual state (what really exists in the cluster).</li>
+    <li><strong>Act</strong> to close the gap: create, update or delete things.</li>
+    <li>Repeat whenever something changes.</li>
+  </ol>
+  <p>For our <code>Website</code>, a controller might create a Deployment with 3 replicas and a Service. If someone deletes the Deployment, the controller notices and creates it again. This is the same pattern the built-in Deployment controller uses to keep Pods running (see <a href="05-deployments-replicasets.html">Lesson 5</a>).</p>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 680 250" role="img" aria-label="A user applies a custom resource to the API server. The controller watches the API server and creates Deployments and Services to match.">
+      <defs><marker id="arr12" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" style="fill:var(--text-2)"/></marker></defs>
+      <rect class="s-box2" x="15" y="95" width="110" height="60" rx="8"/>
+      <text class="s-text-b" x="70" y="122" text-anchor="middle">User</text>
+      <text class="s-text-s" x="70" y="141" text-anchor="middle">applies CR</text>
+      <rect class="s-blue" x="215" y="30" width="200" height="190" rx="10"/>
+      <text class="s-text-b" x="315" y="55" text-anchor="middle">API server</text>
+      <rect class="s-box" x="235" y="72" width="160" height="40" rx="6"/>
+      <text class="s-text" x="315" y="97" text-anchor="middle">CRD: Website type</text>
+      <rect class="s-orange-soft" x="235" y="125" width="160" height="40" rx="6"/>
+      <text class="s-text" x="315" y="150" text-anchor="middle">CR: shop (3 replicas)</text>
+      <text class="s-text-s" x="315" y="195" text-anchor="middle">stored in etcd</text>
+      <rect class="s-purple" x="500" y="30" width="165" height="70" rx="8"/>
+      <text class="s-text-b" x="582" y="60" text-anchor="middle">Custom controller</text>
+      <text class="s-text-s" x="582" y="80" text-anchor="middle">watch, compare, act</text>
+      <rect class="s-green" x="500" y="150" width="165" height="70" rx="8"/>
+      <text class="s-text-b" x="582" y="180" text-anchor="middle">Deployment + Service</text>
+      <text class="s-text-s" x="582" y="200" text-anchor="middle">what actually runs</text>
+      <path class="s-line" d="M125 125 H213" marker-end="url(#arr12)"/>
+      <path class="s-line-o" d="M500 65 H417" marker-end="url(#arr12)"/>
+      <text class="s-text-s" x="458" y="55" text-anchor="middle">watch</text>
+      <path class="s-line-o" d="M582 100 V148" marker-end="url(#arr12)"/>
+      <text class="s-text-s" x="625" y="130" text-anchor="middle">create</text>
+    </svg>
+    <figcaption>The CRD teaches the API server a new type. The controller turns custom resources into real objects.</figcaption>
+  </figure>
+
+  <div class="demo" id="demo-rec">
+    <div class="demo-head">Try it: reconcile loop</div>
+    <div class="demo-body">
+      <p>The custom resource asks for a number of Pods. Break things or change the request, then press <b>Run controller</b> to watch it fix the difference.</p>
+      <div class="stat" id="rc-desired"></div>
+      <div class="pods" id="rc-pods" aria-label="Running pods"></div>
+      <div class="row">
+        <button class="btn" id="rc-up">Desired +1</button>
+        <button class="btn" id="rc-down">Desired -1</button>
+        <button class="btn" id="rc-kill">Delete a Pod</button>
+        <button class="btn primary" id="rc-run">Run controller</button>
+      </div>
+      <div class="output" id="rc-out">Press a button.</div>
+    </div>
+  </div>
+
+  <h2>Who uses this, and who writes it?</h2>
+  <p>Many well-known tools are "CRDs plus a controller": Istio (VirtualService), Argo CD (Application), Prometheus Operator (<a href="14-monitoring-prometheus-grafana.html">Lesson 14</a>), cert-manager and more. For a typical DevOps engineer the three steps are:</p>
+  <ol class="steps">
+    <li><strong>Install the CRDs</strong> (usually from the project's docs, a Helm chart or an operator).</li>
+    <li><strong>Install the controller</strong>, cluster-wide or for specific namespaces.</li>
+    <li>Teams then <strong>create custom resources</strong> in the namespaces that need the feature.</li>
+  </ol>
+  <p>Most DevOps engineers use CRDs but do not write them. If you do need to write a controller:</p>
+  <ul>
+    <li><strong>Go</strong> is the most popular language, because Kubernetes itself is written in Go and its <code>client-go</code> library is mature. Python and Java clients also exist.</li>
+    <li>Under the hood the controller registers <strong>watchers</strong> for your resource type. Events (created, updated, deleted) go into a <strong>work queue</strong>, and workers pull items off it and reconcile them.</li>
+    <li>Frameworks hide most of this. <strong>controller-runtime</strong>, Kubebuilder and the Operator SDK are the common choices.</li>
+  </ol>
+  <div class="callout"><span class="callout-title">Note</span>An <strong>operator</strong> is a custom controller that encodes human operations knowledge (install, back up, upgrade an app such as a database). Think of it as a controller with a job title.</div>
+
+  <div class="callout warn"><span class="callout-title">Watch out</span>Deleting a CRD deletes <strong>every</strong> custom resource of that type. Treat CRDs with the same care as a database schema.</div>
+
+  <h2>Check yourself</h2>
+  <div class="quiz" data-answer="1">
+    <div class="q">You applied a custom resource and it shows in <code>kubectl get</code>, but nothing happens. What is most likely missing?</div>
+    <div class="opts"><button>The CRD</button><button>The custom controller</button><button>A Service</button></div>
+    <div class="explain">The CRD already exists (otherwise the apply would have failed). Without a controller, nobody acts on the stored object.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">What does the reconcile loop do?</div>
+    <div class="opts"><button>Backs up etcd on a schedule</button><button>Restarts the API server when it fails</button><button>Compares desired and actual state and acts to make them match</button></div>
+    <div class="explain">Observe, compare, act, repeat. It is the core of every Kubernetes controller.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">What is the difference between a CRD and a CR?</div>
+    <div class="opts"><button>A CRD defines a new type; a CR is an object of that type</button><button>A CRD is for Pods; a CR is for Nodes</button><button>They are the same thing</button></div>
+    <div class="explain">Like the difference between the Deployment type and one specific Deployment you create.</div>
+  </div>
+
+  <section class="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li>CRDs extend the Kubernetes API with new object types, and validate objects of those types.</li>
+      <li>A custom resource is one object of such a type; by itself it is only stored data.</li>
+      <li>A custom controller watches custom resources and makes reality match them via the reconcile loop.</li>
+      <li>Typical flow: install CRD, install controller, create custom resources.</li>
+      <li>Go with controller-runtime, Kubebuilder or Operator SDK is the usual way to build one.</li>
+    </ul>
+  </section>
+</main>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var desired = 3, actual = 3;
+  function draw(msg, cls) {
+    $("rc-desired").textContent = "Custom resource says: replicas = " + desired + "   |   Actually running: " + actual;
+    var h = "";
+    for (var i = 1; i <= actual; i++) h += '<div class="pod">P' + i + "</div>";
+    $("rc-pods").innerHTML = h;
+    if (msg) { $("rc-out").className = "output " + (cls || ""); $("rc-out").textContent = msg; }
+  }
+  $("rc-up").addEventListener("click", function () { if (desired < 8) desired++; draw("You edited the custom resource. Desired and actual now differ.", "bad"); });
+  $("rc-down").addEventListener("click", function () { if (desired > 0) desired--; draw("You edited the custom resource. Desired and actual now differ.", "bad"); });
+  $("rc-kill").addEventListener("click", function () { if (actual > 0) actual--; draw("A Pod disappeared. Desired and actual now differ.", "bad"); });
+  $("rc-run").addEventListener("click", function () {
+    if (desired === actual) { draw("Nothing to do: desired equals actual.", "ok"); return; }
+    var diff = desired - actual;
+    actual = desired;
+    draw("Controller " + (diff > 0 ? "created " + diff : "deleted " + (-diff)) + " Pod(s). Now " + actual + " running, as requested.", "ok");
+  });
+  draw("Press a button.", "");
+})();
+</script>
+</body>
+</html>
