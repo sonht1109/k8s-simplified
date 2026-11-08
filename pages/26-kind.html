@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kubernetes in Docker (kind) · Kubernetes Simplified</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/site.js"></script>
+</head>
+<body data-page="26">
+<main class="wrap">
+  <header class="page-head">
+    <h1>Kubernetes in Docker (kind)</h1>
+    <p class="lead">kind runs a real Kubernetes cluster inside Docker containers on your laptop. You'll learn why it beats the usual local options, how to create single-node and multi-node clusters in seconds, and how to open your apps from the browser.</p>
+  </header>
+
+  <h2>Why a local cluster at all?</h2>
+  <p>To practise Kubernetes you need a cluster. Cloud clusters (EKS, AKS, GKE) work, but they cost money and take time to create. Many beginners rent a cloud virtual machine just to run Minikube, and the bill adds up. A <strong>local cluster</strong> is free, fast, and safe to break.</p>
+
+  <h2>The problem with the usual choice: Minikube</h2>
+  <p>Minikube is the best-known local option. It has two common modes:</p>
+  <ul>
+    <li><strong>VM driver (VirtualBox, HyperKit):</strong> Minikube starts a whole virtual machine and puts the control plane and the worker in it ("all-in-one"). A VM wants at least about 2 CPUs and 4 GB of RAM. If your laptop is busy with other things, the VM may fail to start or get killed.</li>
+    <li><strong>Docker driver:</strong> Minikube uses a container instead of a VM. Better, but running <em>several</em> clusters or a multi-node cluster at once is clumsy.</li>
+  </ul>
+
+  <h2>What kind does differently</h2>
+  <p><strong>kind</strong> stands for <strong>K</strong>ubernetes <strong>in</strong> <strong>D</strong>ocker. Each Kubernetes <em>node</em> is simply one Docker container. Inside that container run the kubelet, a container runtime and (on control-plane nodes) the API server, etcd and so on. If you need the pieces explained, see <a href="02-architecture.html">Lesson 2: Architecture</a>.</p>
+  <ul>
+    <li>Single-node cluster = <strong>1 container</strong>.</li>
+    <li>1 control plane + 2 workers = <strong>3 containers</strong>.</li>
+    <li>A multi-node cluster gets one extra container, a small load balancer in front of the control planes.</li>
+  </ul>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 680 250" role="img" aria-label="A laptop runs Docker. Inside Docker, three containers act as one control-plane node and two worker nodes of a single kind cluster.">
+      <defs><marker id="arr26" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" style="fill:var(--text-2)"/></marker></defs>
+      <rect class="s-dash" x="10" y="10" width="660" height="230" rx="12"/>
+      <text class="s-text-s" x="26" y="32">Your laptop</text>
+      <rect class="s-box2" x="30" y="60" width="130" height="60" rx="8"/>
+      <text class="s-text-b" x="95" y="86" text-anchor="middle">kubectl</text>
+      <text class="s-text-s" x="95" y="104" text-anchor="middle">kind CLI</text>
+      <rect class="s-blue" x="210" y="44" width="440" height="180" rx="10"/>
+      <text class="s-text-b" x="230" y="68">Docker</text>
+      <rect class="s-purple" x="230" y="90" width="120" height="110" rx="8"/>
+      <text class="s-text-b" x="290" y="125" text-anchor="middle">container 1</text>
+      <text class="s-text-s" x="290" y="145" text-anchor="middle">control-plane</text>
+      <text class="s-text-s" x="290" y="163" text-anchor="middle">node</text>
+      <rect class="s-green" x="370" y="90" width="120" height="110" rx="8"/>
+      <text class="s-text-b" x="430" y="125" text-anchor="middle">container 2</text>
+      <text class="s-text-s" x="430" y="145" text-anchor="middle">worker node</text>
+      <rect class="s-green" x="510" y="90" width="120" height="110" rx="8"/>
+      <text class="s-text-b" x="570" y="125" text-anchor="middle">container 3</text>
+      <text class="s-text-s" x="570" y="145" text-anchor="middle">worker node</text>
+      <path class="s-line" d="M160 90 H208" marker-end="url(#arr26)"/>
+    </svg>
+    <figcaption>One kind cluster: every Kubernetes node is a Docker container.</figcaption>
+  </figure>
+
+  <p>Because containers start in seconds and share your laptop's kernel, kind is light. A nine-node cluster can be up in about 30 seconds, and you can keep several clusters side by side (as many as your laptop can handle).</p>
+
+  <h2>Install and create your first cluster</h2>
+  <p>You need <strong>Docker</strong> running first, plus <code>kubectl</code>. Then install kind (for example <code>brew install kind</code> on macOS, or download the binary from the kind releases page). On Windows, run Docker Desktop and install kind there; WSL 2 also works.</p>
+<pre><code>kind create cluster --name demo
+kind get clusters
+kubectl config current-context     # kind-demo
+kubectl get nodes</code></pre>
+  <p>kind adds a context called <code>kind-&lt;name&gt;</code> to your kubeconfig and switches to it, so <code>kubectl</code> talks to the new cluster straight away. You can see the "node" as a container:</p>
+<pre><code>docker ps | grep -i demo</code></pre>
+
+  <h2>Multi-node clusters with a config file</h2>
+  <p>A plain <code>kind create cluster</code> gives one node. For more, describe the nodes in a YAML file:</p>
+<pre><code>kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+- role: control-plane
+- role: worker
+- role: worker</code></pre>
+<pre><code>kind create cluster --name multi --config kind-config.yaml
+kubectl get nodes</code></pre>
+  <p>Each <code>- role:</code> line adds one container. Add more <code>worker</code> lines for a bigger cluster, or more <code>control-plane</code> lines to practise a highly available control plane.</p>
+
+  <div class="demo" id="demo-kind">
+    <div class="demo-head">Try it: design a kind cluster</div>
+    <div class="demo-body">
+      <p>Choose how many control-plane and worker nodes you want. See the config file and the Docker containers kind would create.</p>
+      <div class="row">
+        <label>Control planes <select id="k-cp"><option>1</option><option>3</option></select></label>
+        <label>Workers <input type="range" id="k-w" min="0" max="8" value="2" aria-label="Number of workers"> <b id="k-wv">2</b></label>
+      </div>
+      <div class="output" id="k-out"></div>
+    </div>
+  </div>
+
+  <h2>Running and reaching apps</h2>
+  <p>Cloud clusters hand out a public address when you create a <code>LoadBalancer</code> Service. A local kind cluster has no cloud to do that, so the address stays <em>pending</em>. The simplest native fix is <code>kubectl port-forward</code> (the details are in <a href="24-port-forwarding.html">Lesson 24</a>):</p>
+<pre><code>kubectl create deployment nginx --image=nginx
+kubectl get pods
+kubectl port-forward pod/&lt;pod-name&gt; 8888:80
+# open http://localhost:8888</code></pre>
+  <p>For a Service of type NodePort or an Ingress on kind, you can publish a node's port to your laptop with <code>extraPortMappings</code> in the config. (Services themselves are covered in <a href="06-services-intro.html">Lesson 6</a> and <a href="08-services-deep-dive.html">Lesson 8</a>.)</p>
+  <div class="callout tip"><span class="callout-title">Tip</span>Your own image isn't on a registry? Build it locally and copy it into the cluster: <code>kind load docker-image my-app:1.0 --name demo</code>. Then use that tag in your Pod (and set <code>imagePullPolicy: IfNotPresent</code>).</div>
+
+  <h2>Clean up</h2>
+<pre><code>kind delete cluster --name demo
+kind delete cluster --name multi</code></pre>
+
+  <h2>kind vs Minikube</h2>
+  <div class="table-wrap"><table>
+    <tr><th></th><th>kind</th><th>Minikube</th></tr>
+    <tr><td>Node is a…</td><td>Docker container</td><td>VM (or one container with the Docker driver)</td></tr>
+    <tr><td>Multi-node</td><td>Easy, one config file</td><td>Possible, less smooth</td></tr>
+    <tr><td>Many clusters at once</td><td>Easy, just give each a name</td><td>Profiles, heavier</td></tr>
+    <tr><td>Needs</td><td>Docker only</td><td>Docker or a hypervisor</td></tr>
+  </table></div>
+
+  <h2>What local clusters are good for, and not</h2>
+  <div class="grid-2">
+    <div class="card"><h3>Great for</h3><p>Learning objects, practising <a href="21-scheduling.html">node affinity and taints</a>, scaling, Pod disruption budgets, testing manifests and Helm charts, CI pipelines.</p></div>
+    <div class="card"><h3>Not great for</h3><p>Real cloud load balancers, rehearsing a <a href="16-cluster-upgrade.html">production cluster upgrade</a>, or building admission controllers and operators that need a realistic environment.</p></div>
+  </div>
+  <div class="callout warn"><span class="callout-title">Watch out</span>kind is for learning and testing, not production. All nodes share one laptop, so there is no real high availability.</div>
+
+  <h2>Check yourself</h2>
+  <div class="quiz" data-answer="1">
+    <div class="q">You create a kind cluster with 1 control plane and 2 workers. What do you see in <code>docker ps</code>?</div>
+    <div class="opts"><button>One container for the whole cluster</button><button>One container per node (3, plus a load balancer if there are several control planes)</button><button>Three virtual machines</button></div>
+    <div class="explain">Each Kubernetes node is a Docker container. Only multiple control planes add the extra load balancer container.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">Your <code>LoadBalancer</code> Service stays on <code>&lt;pending&gt;</code> in kind. Simplest way to open the app?</div>
+    <div class="opts"><button>Reinstall Docker</button><button>Wait longer, a cloud IP will appear</button><button><code>kubectl port-forward</code></button></div>
+    <div class="explain">There is no cloud load balancer behind a local cluster. Port-forwarding tunnels a local port to the Pod or Service.</div>
+  </div>
+
+  <section class="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li>kind = Kubernetes in Docker: every node is a container, so clusters start in seconds and need no VM.</li>
+      <li><code>kind create cluster --name x</code> makes a cluster and a <code>kind-x</code> kubectl context.</li>
+      <li>Use a <code>kind.x-k8s.io/v1alpha4</code> config with <code>role: control-plane</code> / <code>worker</code> for multi-node clusters.</li>
+      <li>Run several clusters side by side; delete with <code>kind delete cluster --name x</code>.</li>
+      <li>Use <code>port-forward</code> (or extraPortMappings) to reach apps, and <code>kind load docker-image</code> for local images.</li>
+      <li>Great for learning and testing; not for production or upgrade rehearsals.</li>
+    </ul>
+  </section>
+</main>
+<script>
+(function () {
+  var cp = document.getElementById("k-cp"), w = document.getElementById("k-w"),
+      wv = document.getElementById("k-wv"), out = document.getElementById("k-out");
+  function render() {
+    var c = +cp.value, n = +w.value, i, yaml = "kind: Cluster\napiVersion: kind.x-k8s.io/v1alpha4\nnodes:\n";
+    for (i = 0; i < c; i++) yaml += "- role: control-plane\n";
+    for (i = 0; i < n; i++) yaml += "- role: worker\n";
+    var total = c + n + (c > 1 ? 1 : 0);
+    wv.textContent = n;
+    var names = [];
+    for (i = 0; i < c; i++) names.push("demo-control-plane" + (i ? i + 1 : ""));
+    for (i = 0; i < n; i++) names.push("demo-worker" + (i ? i + 1 : ""));
+    if (c > 1) names.push("demo-external-load-balancer");
+    out.className = "output ok";
+    out.innerHTML = "<b>kind-config.yaml</b><pre style='margin:6px 0'><code></code></pre><b>" + total +
+      " Docker container" + (total > 1 ? "s" : "") + ":</b><pre style='margin:6px 0'><code></code></pre>";
+    var codes = out.getElementsByTagName("code");
+    codes[0].textContent = yaml;
+    codes[1].textContent = names.join("\n");
+  }
+  cp.addEventListener("change", render);
+  w.addEventListener("input", render);
+  render();
+})();
+</script>
+</body>
+</html>
