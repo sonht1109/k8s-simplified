@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Real Production Challenges · Kubernetes Simplified</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/site.js"></script>
+<style>
+  .opt-row { display: flex; gap: 14px; flex-wrap: wrap; margin: 8px 0; }
+  .opt-row label { display: flex; gap: 6px; align-items: center; }
+  .ns-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 10px 0; }
+  .ns { border: 2px solid var(--border); border-radius: 8px; padding: 6px; text-align: center; font-size: 13px; }
+  .ns.hurt { border-color: var(--red); background: var(--surface-2); }
+  .ns.okay { border-color: var(--green); }
+  .ns .pods { font-size: 12px; color: var(--text-2); margin-top: 4px; }
+</style>
+</head>
+<body data-page="15">
+<main class="wrap">
+  <header class="page-head">
+    <h1>Real Production Challenges</h1>
+    <p class="lead">Three problems almost every DevOps engineer meets on live clusters: teams fighting over shared resources, Pods killed for running out of memory, and cluster upgrades. Knowing how to explain them also makes you sound very credible in interviews.</p>
+  </header>
+
+  <h2>Challenge 1: sharing one cluster between many teams</h2>
+  <p>In production, teams rarely get a cluster each. Many microservices and project teams deploy to the same cluster, so a DevOps engineer must decide how to split its CPU and memory fairly.</p>
+  <p>The obvious first step is one <strong>namespace per team</strong> (for example <code>web</code>, <code>payments</code>, <code>shipping</code>). But namespaces by themselves are only labels and boundaries for names and permissions. They do <em>not</em> limit resource use.</p>
+
+  <div class="callout"><span class="callout-title">The problem</span>Suppose the cluster has 100 CPU and 100 GB RAM. A service in the payments namespace has a memory leak and starts taking 32 GB instead of 2 GB. Everybody else now has less. Services in <em>other</em> namespaces get starved, crash, and show up as <code>CrashLoopBackOff</code> with <code>OOMKilled</code>. One team's bug becomes everyone's outage.</div>
+
+  <p>The term for how far a failure spreads is its <strong>blast radius</strong>. Your goal is to shrink it, in two steps.</p>
+
+  <h3>Step 1: ResourceQuota (a cap per namespace)</h3>
+  <p>A <strong>ResourceQuota</strong> sets a total limit for everything in a namespace. All its Pods together cannot exceed it, whether that is 5 services or 100.</p>
+<pre><code>apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: payments-quota
+  namespace: payments
+spec:
+  hard:
+    requests.cpu: "10"
+    requests.memory: 10Gi
+    limits.cpu: "15"
+    limits.memory: 15Gi
+    pods: "50"</code></pre>
+  <p>How do you pick the numbers? Ask each team to do <strong>performance benchmarking</strong> of their services and tell you what they really need. You can challenge unusual numbers in a meeting, but once the data is sound, you allocate it. If the quotas add up to more than the cluster has, your job is to <strong>add nodes</strong>.</p>
+  <p>The blast radius is now one namespace instead of the whole cluster. But inside that namespace, a leaking Pod can still starve its neighbours.</p>
+
+  <h3>Step 2: resource requests and limits (a cap per container)</h3>
+  <p>Set them on each container. A <strong>request</strong> is the minimum the scheduler reserves; a <strong>limit</strong> is the maximum the container may use.</p>
+<pre><code>containers:
+- name: payment-api
+  image: example/payment-api:1.4
+  resources:
+    requests:
+      cpu: "500m"
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi</code></pre>
+  <ul>
+    <li>If a container goes over its <strong>memory limit</strong>, it is killed (OOMKilled). Only that one Pod suffers.</li>
+    <li>If it goes over its <strong>CPU limit</strong>, it is slowed down (throttled), not killed.</li>
+  </ul>
+  <div class="callout tip"><span class="callout-title">Tip</span>When a ResourceQuota covers CPU or memory, every new Pod in that namespace <em>must</em> specify requests and limits, or it is rejected. A <code>LimitRange</code> can set defaults so teams do not forget.</div>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 700 190" role="img" aria-label="Blast radius shrinks from whole cluster to one namespace to one Pod when quotas and limits are added.">
+      <rect class="s-red" x="10" y="20" width="210" height="140" rx="12"/>
+      <text class="s-text-b" x="115" y="50" text-anchor="middle">No controls</text>
+      <text class="s-text-s" x="115" y="90" text-anchor="middle">leaky Pod can eat</text>
+      <text class="s-text-s" x="115" y="108" text-anchor="middle">the whole cluster</text>
+      <text class="s-text-b" x="115" y="140" text-anchor="middle">Blast radius: cluster</text>
+      <rect class="s-orange-soft" x="245" y="20" width="210" height="140" rx="12"/>
+      <text class="s-text-b" x="350" y="50" text-anchor="middle">+ ResourceQuota</text>
+      <text class="s-text-s" x="350" y="90" text-anchor="middle">damage stays inside</text>
+      <text class="s-text-s" x="350" y="108" text-anchor="middle">one namespace</text>
+      <text class="s-text-b" x="350" y="140" text-anchor="middle">Blast radius: namespace</text>
+      <rect class="s-green" x="480" y="20" width="210" height="140" rx="12"/>
+      <text class="s-text-b" x="585" y="50" text-anchor="middle">+ Pod limits</text>
+      <text class="s-text-s" x="585" y="90" text-anchor="middle">only the leaky Pod</text>
+      <text class="s-text-s" x="585" y="108" text-anchor="middle">is OOMKilled</text>
+      <text class="s-text-b" x="585" y="140" text-anchor="middle">Blast radius: one Pod</text>
+    </svg>
+    <figcaption>Each layer of control shrinks the area an unhealthy app can damage.</figcaption>
+  </figure>
+
+  <div class="demo" id="demo-blast">
+    <div class="demo-head">Try it: blast radius</div>
+    <div class="demo-body">
+      <p>The <code>payments</code> namespace has a Pod that leaks memory. Toggle the controls and press <b>Leak memory</b> to see who gets hurt.</p>
+      <div class="opt-row">
+        <label><input type="checkbox" id="bl-quota"> ResourceQuota on namespaces</label>
+        <label><input type="checkbox" id="bl-limit"> Memory limits on Pods</label>
+      </div>
+      <div class="ns-grid" id="bl-grid"></div>
+      <div class="row"><button class="btn primary" id="bl-go">Leak memory</button></div>
+      <div class="output" id="bl-out">Press <b>Leak memory</b>.</div>
+    </div>
+  </div>
+
+  <h2>Challenge 2: a Pod keeps getting OOMKilled</h2>
+  <p>You have set the quota and limits, and still one Pod goes into <code>CrashLoopBackOff</code>. Remember that <code>CrashLoopBackOff</code> is only a <em>status</em>. The real reason is shown by describe:</p>
+<pre><code>kubectl get pods -n payments
+kubectl describe pod &lt;pod&gt; -n payments
+#   Last State:  Terminated
+#     Reason:    OOMKilled
+#     Exit Code: 137</code></pre>
+  <p>The general debug flow is in <a href="20-crashloopbackoff.html">Lesson 20: CrashLoopBackOff</a>. Here is the production angle:</p>
+  <ol class="steps">
+    <li><strong>Rule out noise.</strong> Without quotas and limits, an OOMKill might be caused by another team's greedy Pod. With them in place, the guilty Pod identifies itself.</li>
+    <li><strong>Check the limit is realistic</strong> against the team's benchmarking data. A limit that is too tight kills a healthy app. Raise it if the data supports it.</li>
+    <li>If it still dies with a sensible limit, the app is leaking. As a DevOps engineer, <strong>collect evidence for the developers</strong>: a thread dump and heap dump for a Java app (for example with <code>kill -3</code> or <code>jmap</code>/<code>jstack</code>; other languages have their own profilers), plus metrics from <a href="14-monitoring-prometheus-grafana.html">Prometheus and Grafana</a> showing memory over time.</li>
+    <li>Developers analyze the dumps, find the leak, and ship a new version. You deploy it.</li>
+  </ol>
+  <div class="callout interview"><span class="callout-title">Interview angle</span>"How do you handle OOMKilled?" Describe the order: confirm via <code>describe</code> that it is OOM, check quotas and limits, review memory usage graphs, take dumps, hand them to developers, redeploy the fix. Say that <em>CrashLoopBackOff is a symptom, OOMKilled is the cause</em>.</div>
+
+  <h2>Challenge 3: upgrades</h2>
+  <p>Kubernetes releases often, so every cluster must eventually move from, say, 1.29 to 1.30. It is risky, since the control plane and every node are touched. Teams that do it well <strong>write a manual</strong> (a runbook) with the exact steps and rehearse it.</p>
+  <p>A good manual contains:</p>
+  <ul>
+    <li><strong>Backups first:</strong> etcd snapshot and a copy of your manifests.</li>
+    <li><strong>Read the release notes.</strong> Engineers often skip this. Removed or deprecated APIs and behaviour changes can break your workloads or even the cluster.</li>
+    <li><strong>Control plane first</strong> (etcd, API server, scheduler, controller manager), in the documented order.</li>
+    <li><strong>Then the nodes, one at a time:</strong> <em>drain</em> a node (Pods move elsewhere), make it unschedulable (<em>cordon</em>), upgrade kubelet and packages, rejoin it, make it schedulable again, and move on to the next node.</li>
+  </ul>
+<pre><code>kubectl drain node-1 --ignore-daemonsets --delete-emptydir-data
+# ...upgrade kubelet and packages on node-1...
+kubectl uncordon node-1</code></pre>
+  <p>The full procedure, version skew rules and rollback planning are covered in <a href="16-cluster-upgrade.html">Lesson 16: Upgrading a Cluster in Production</a>. For managing many clusters, see <a href="03-managing-clusters-kops.html">Lesson 3</a>.</p>
+
+  <h2>How to tell these stories</h2>
+  <p>A reliable way to answer "what challenges have you faced?": state the <strong>situation</strong>, what <strong>went wrong</strong>, what <strong>you changed</strong>, and the <strong>result</strong>. For example: "A shared cluster was hit by one leaking Pod. I introduced namespace quotas and Pod limits, so the problem now stays inside a single Pod and we can see exactly which one."</p>
+
+  <h2>Check yourself</h2>
+  <div class="quiz" data-answer="2">
+    <div class="q">Namespaces alone do not stop one team from using all the memory. What does?</div>
+    <div class="opts"><button>More Services</button><button>A bigger Ingress</button><button>A ResourceQuota on each namespace</button></div>
+    <div class="explain">ResourceQuota caps the total CPU, memory and object counts a namespace may use.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">A container exceeds its memory limit. What happens?</div>
+    <div class="opts"><button>It is OOMKilled and restarted</button><button>It is throttled, as with CPU</button><button>The node reboots</button></div>
+    <div class="explain">Memory cannot be throttled, so the container is killed. CPU overuse only slows the container down.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">During a node upgrade, what do you do before upgrading kubelet on that node?</div>
+    <div class="opts"><button>Delete the namespace</button><button>Drain it so Pods move to other nodes</button><button>Restart etcd</button></div>
+    <div class="explain">Drain (which also cordons) moves workloads away safely before the node is touched.</div>
+  </div>
+
+  <section class="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li>Namespaces separate teams but need a <strong>ResourceQuota</strong> to cap what each can consume.</li>
+      <li>Set <strong>requests and limits</strong> on containers so a leaky app only hurts itself. Think "blast radius".</li>
+      <li>CrashLoopBackOff is a status; check <code>describe</code> for the real cause such as OOMKilled.</li>
+      <li>For persistent OOMs, share thread/heap dumps and metrics with developers.</li>
+      <li>Upgrades need backups, release-note review, control plane first, then drain-and-upgrade each node.</li>
+    </ul>
+  </section>
+</main>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var names = ["payments", "web", "shipping"];
+  function render(state) {
+    $("bl-grid").innerHTML = names.map(function (n, i) {
+      var s = state ? state[i] : { cls: "", txt: "healthy" };
+      return '<div class="ns ' + s.cls + '"><b>' + n + '</b><div class="pods">' + s.txt + "</div></div>";
+    }).join("");
+  }
+  $("bl-go").addEventListener("click", function () {
+    var quota = $("bl-quota").checked, limit = $("bl-limit").checked, msg, st;
+    if (limit) {
+      st = [{ cls: "hurt", txt: "leaky Pod OOMKilled" }, { cls: "okay", txt: "all Pods fine" }, { cls: "okay", txt: "all Pods fine" }];
+      msg = "Memory limit hit: only the leaking Pod is killed. Blast radius: one Pod. Easy to identify and fix.";
+    } else if (quota) {
+      st = [{ cls: "hurt", txt: "neighbour Pods starved" }, { cls: "okay", txt: "all Pods fine" }, { cls: "okay", txt: "all Pods fine" }];
+      msg = "The quota stops the leak at the namespace edge. Other teams are safe, but the payments namespace suffers. Blast radius: one namespace.";
+    } else {
+      st = [{ cls: "hurt", txt: "Pods starved" }, { cls: "hurt", txt: "OOMKilled, crash loops" }, { cls: "hurt", txt: "OOMKilled, crash loops" }];
+      msg = "Nothing stops the leak, so it eats the cluster's memory. Everyone is affected. Blast radius: whole cluster.";
+    }
+    render(st);
+    $("bl-out").className = "output " + (limit ? "ok" : "bad");
+    $("bl-out").textContent = msg;
+  });
+  render(null);
+})();
+</script>
+</body>
+</html>
