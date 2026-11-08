@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+"""Build the full-text search index for all lesson pages.
+
+Output: assets/search-index.js. It sets window.K8S_SEARCH_INDEX.
+A JS file (not JSON) is used so that search also works from file://.
+
+Run again after you change a lesson:  python3 build_search_index.py
+"""
+
+import json
+import os
+import re
+import sys
+from html.parser import HTMLParser
+
+ROOT = os.path.dirname(os.path.abspath(__file__))
+PAGES_DIR = os.path.join(ROOT, "pages")
+OUTPUT = os.path.join(ROOT, "assets", "search-index.js")
+
+# Text in these tags is not lesson content.
+SKIP_TAGS = {"script", "style", "svg", "button", "select", "option", "textarea", "input"}
+VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
+BLOCK_TAGS = {"p", "li", "div", "h1", "h2", "h3", "h4", "td", "th", "pre", "figcaption", "summary", "dt", "dd", "tr", "br"}
+
+
+def clean(text):
+    return re.sub(r"\s+", " ", text).strip()
+
+
+class LessonParser(HTMLParser):
+    """Split the <main> of a lesson into sections, one for each <h2>.
+
+    Section index i matches the i-th <h2> in <main>. site.js gives that
+    <h2> the id "s<i+1>", so a result can link to it.
+    """
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.main_depth = 0
+        self.skip_depth = 0
+        self.title = ""
+        self.lead = ""
+        self.sections = [{"h": "", "id": "", "parts": []}]
+        self.h2_count = 0
+        self.capture = None  # "title" | "lead" | "h2" | None
+        self.capture_tag = None
+        self.buf = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in VOID_TAGS:
+            if tag == "br":
+                self._add(" ")
+            return
+        if tag == "main":
+            self.main_depth += 1
+            return
+        if not self.main_depth:
+            return
+        if tag in SKIP_TAGS:
+            self.skip_depth += 1
+            return
+        if self.skip_depth:
+            return
+        cls = dict(attrs).get("class") or ""
+        if tag == "h1" and not self.title:
+            self._start("title", tag)
+        elif tag == "p" and "lead" in cls.split() and not self.lead:
+            self._start("lead", tag)
+        elif tag == "h2":
+            self.h2_count += 1
+            self.sections.append({"h": "", "id": "s%d" % self.h2_count, "parts": []})
+            self._start("h2", tag)
+        if tag in BLOCK_TAGS:
+            self._add(" ")
+
+    def handle_endtag(self, tag):
+        if tag in VOID_TAGS:
+            return
+        if tag == "main":
+            self.main_depth = max(0, self.main_depth - 1)
+            return
+        if not self.main_depth:
+            return
+        if tag in SKIP_TAGS:
+            self.skip_depth = max(0, self.skip_depth - 1)
+            return
+        if self.skip_depth:
+            return
+        if self.capture and tag == self.capture_tag:
+            text = clean("".join(self.buf))
+            if self.capture == "title":
+                self.title = text
+            elif self.capture == "lead":
+                self.lead = text
+            else:
+                self.sections[-1]["h"] = text
+            self.capture = None
+            self.buf = []
+            return
+        if tag in BLOCK_TAGS:
+            self._add(" ")
+
+    def handle_data(self, data):
+        if self.main_depth and not self.skip_depth:
+            self._add(data)
+
+    def _start(self, kind, tag):
+        self.capture = kind
+        self.capture_tag = tag
+        self.buf = []
+
+    def _add(self, text):
+        if self.capture:
+            self.buf.append(text)
+        else:
+            self.sections[-1]["parts"].append(text)
+
+
+def parse_lesson(path):
+    with open(path, encoding="utf-8") as f:
+        html = f.read()
+    parser = LessonParser()
+    parser.feed(html)
+    parser.close()
+    sections = []
+    for s in parser.sections:
+        text = clean("".join(s["parts"]))
+        if s["h"] or text:
+            sections.append({"h": s["h"], "id": s["id"], "t": text})
+    if not parser.title:
+        raise ValueError("no <h1> in <main>")
+    return {"title": parser.title, "lead": parser.lead, "sections": sections}
+
+
+def main():
+    files = sorted(f for f in os.listdir(PAGES_DIR) if f.endswith(".html") and f[:2].isdigit())
+    pages = []
+    for name in files:
+        try:
+            page = parse_lesson(os.path.join(PAGES_DIR, name))
+        except Exception as e:  # Skip a bad page. Do not stop the full build.
+            print("Warning: skipped %s: %s" % (name, e), file=sys.stderr)
+            continue
+        page["n"] = int(name[:2])
+        page["slug"] = name[:-5]
+        pages.append(page)
+
+    if not pages:
+        print("Error: no lessons were indexed.", file=sys.stderr)
+        sys.exit(1)
+
+    data = json.dumps(pages, ensure_ascii=False, separators=(",", ":"))
+    with open(OUTPUT, "w", encoding="utf-8") as f:
+        f.write("/* Generated by build_search_index.py. Do not edit. */\n")
+        f.write("window.K8S_SEARCH_INDEX=" + data + ";\n")
+
+    chars = sum(len(s["t"]) for p in pages for s in p["sections"])
+    print("Indexed %d of %d lessons, %s characters -> %s"
+          % (len(pages), len(files), format(chars, ","), os.path.relpath(OUTPUT, ROOT)))
+
+
+if __name__ == "__main__":
+    main()
