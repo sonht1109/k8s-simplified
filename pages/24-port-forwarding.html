@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>kubectl Port-Forwarding · Kubernetes Simplified</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/site.js"></script>
+<style>
+  .sim-box { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin: 10px 0; background: var(--surface-2); }
+  .sim-box label { display: block; margin: 6px 0 2px; font-weight: 600; font-size: 14px; }
+  .sim-box select, .sim-box input[type=text] { width: 100%; box-sizing: border-box; }
+  .sim-box .chk { display: flex; gap: 8px; align-items: flex-start; font-weight: 400; }
+  .sim-box .chk input { width: auto; }
+  #pf-cmd { font-family: var(--mono); word-break: break-all; }
+</style>
+</head>
+<body data-page="24">
+<main class="wrap">
+  <header class="page-head">
+    <h1>kubectl Port-Forwarding</h1>
+    <p class="lead">You deployed an app, but you cannot open it in your browser. <code>kubectl port-forward</code> creates a private tunnel from your machine to a Pod or Service. You will learn how it works, the three common situations, and how to fix the usual errors.</p>
+  </header>
+
+  <div class="xref-box"><div>Services and NodePort are explained in <a href="06-services-intro.html">Lesson 6</a> and <a href="08-services-deep-dive.html">Lesson 8</a>. To run a local cluster like the one used here, see <a href="26-kind.html">Lesson 26: kind</a>.</div></div>
+
+  <h2>Port forwarding in plain words</h2>
+  <p><strong>Port forwarding</strong> means "connect a port on my machine to a port on another machine". It is an old networking idea, not a Kubernetes invention. Classic example: a database on a server should only be reachable by company clients. To test it, you do not open the firewall to everyone; you create an <strong>SSH tunnel</strong>, so that <code>localhost:3306</code> on your laptop secretly leads to port 3306 on the server. When you finish testing, you close the tunnel and nothing was ever exposed.</p>
+  <p><code>kubectl port-forward</code> does the same for the cluster network.</p>
+
+  <h2>Why you need it</h2>
+  <p>Pods and ClusterIP Services live on a private network inside the cluster. Your laptop is outside it. Running Kubernetes in Docker (kind, minikube with the Docker driver) adds one more layer: the "node" is a container with its own network, so even a NodePort is often not reachable from your browser.</p>
+  <p>You could set up an Ingress (<a href="09-ingress-tls.html">Lesson 9</a>) or a LoadBalancer, but for a quick test that is too much work. Port-forward is the shortcut.</p>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 700 190" role="img" aria-label="Browser on localhost:9000 connects through kubectl to the API server, then to a Pod's port 80 inside the cluster.">
+      <defs><marker id="arr24" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" style="fill:var(--text-2)"/></marker></defs>
+      <rect class="s-box2" x="10" y="40" width="190" height="110" rx="10"/>
+      <text class="s-text-b" x="105" y="62" text-anchor="middle">Your laptop</text>
+      <rect class="s-blue" x="30" y="80" width="150" height="50" rx="8"/>
+      <text class="s-text-b" x="105" y="102" text-anchor="middle">localhost:9000</text>
+      <text class="s-text-s" x="105" y="120" text-anchor="middle">kubectl port-forward</text>
+      <rect class="s-dash" x="300" y="10" width="390" height="170" rx="12"/>
+      <text class="s-text-s" x="316" y="30">Cluster (private network)</text>
+      <rect class="s-purple" x="320" y="75" width="130" height="60" rx="8"/>
+      <text class="s-text-b" x="385" y="110" text-anchor="middle">API server</text>
+      <rect class="s-green" x="520" y="75" width="150" height="60" rx="8"/>
+      <text class="s-text-b" x="595" y="102" text-anchor="middle">Pod</text>
+      <text class="s-text-s" x="595" y="120" text-anchor="middle">port 80</text>
+      <path class="s-line-o" d="M180 105 H318" marker-end="url(#arr24)"/>
+      <path class="s-line-o" d="M450 105 H518" marker-end="url(#arr24)"/>
+      <text class="s-text-s" x="250" y="95" text-anchor="middle">tunnel</text>
+    </svg>
+    <figcaption>Traffic to a local port travels through the API server to the Pod. No Service type or firewall change needed.</figcaption>
+  </figure>
+
+  <h2>The command</h2>
+<pre><code>kubectl port-forward &lt;resource&gt; &lt;local-port&gt;:&lt;remote-port&gt; [-n namespace]</code></pre>
+  <p>The resource can be a Pod, a Deployment or a Service (<code>pod/name</code>, <code>deploy/name</code>, <code>svc/name</code>). They all end up at a container in the end. For a Service, the remote port is the <strong>Service port</strong>; for a Pod, it is the container's port. The command keeps running in your terminal; press <kbd>Ctrl+C</kbd> to close the tunnel.</p>
+  <p>Example: install Argo CD in a local kind cluster and open its web UI.</p>
+<pre><code>kubectl create namespace argocd
+kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+kubectl get svc -n argocd                   # argocd-server is ClusterIP
+kubectl port-forward svc/argocd-server -n argocd 9000:443</code></pre>
+  <p>Now open <code>https://localhost:9000</code> (accept the self-signed certificate warning). Changing the Service to NodePort would not have helped here, because the node is a container your laptop cannot reach.</p>
+
+  <h2>Use case 1: cluster on your laptop</h2>
+  <p>The default. kubectl and the browser are on the same machine, and the tunnel listens on <code>127.0.0.1</code> (localhost) only. That is also the safe choice, since nobody else on the network can use your tunnel.</p>
+
+  <h2>Use case 2: cluster on a cloud VM</h2>
+  <p>Say minikube runs on an EC2 instance or Azure VM and you want to use your laptop's browser. Run the port-forward <em>on the VM</em>, but tell it to listen on all network interfaces:</p>
+<pre><code>kubectl port-forward --address 0.0.0.0 svc/argocd-server -n argocd 9000:443</code></pre>
+  <p>Then browse to <code>https://&lt;VM-public-IP&gt;:9000</code>. Remember to allow inbound port 9000 in the VM's security group or firewall. Without <code>--address 0.0.0.0</code> the tunnel only listens on the VM's own localhost, which you cannot reach from outside.</p>
+  <div class="callout warn"><span class="callout-title">Watch out</span>Binding to 0.0.0.0 opens the tunnel to anyone who can reach that port. Restrict the firewall to your own IP and close the tunnel when finished. Do not leave it running on a production machine.</div>
+
+  <h2>Use case 3: the local port is taken</h2>
+  <p>If you ask for <code>9000:80</code> and something already uses 9000, you get an error like <code>bind: address already in use</code>. Two options: find and stop that process, or let kubectl choose a free port by <strong>leaving the local port empty</strong>:</p>
+<pre><code>kubectl port-forward svc/argocd-server -n argocd :443
+# Forwarding from 127.0.0.1:62708 -&gt; 8080</code></pre>
+  <p>kubectl prints the port it picked. This is handy in scripts and CI pipelines where you cannot know which ports are free.</p>
+
+  <div class="demo" id="demo-pf">
+    <div class="demo-head">Try it: build a port-forward command</div>
+    <div class="demo-body">
+      <div class="sim-box">
+        <label for="pf-kind">Resource type</label>
+        <select id="pf-kind"><option value="svc">Service</option><option value="deploy">Deployment</option><option value="pod">Pod</option></select>
+        <label for="pf-name">Name</label>
+        <input type="text" id="pf-name" value="my-app" autocapitalize="off" autocomplete="off">
+        <label for="pf-ns">Namespace (blank = default)</label>
+        <input type="text" id="pf-ns" value="" autocapitalize="off" autocomplete="off">
+        <label for="pf-local">Local port (blank = auto-pick)</label>
+        <input type="text" id="pf-local" value="9000" inputmode="numeric">
+        <label for="pf-remote">Remote port</label>
+        <input type="text" id="pf-remote" value="80" inputmode="numeric">
+        <label class="chk"><input type="checkbox" id="pf-remotevm"> Running on a cloud VM (open to the outside)</label>
+      </div>
+      <div class="output" id="pf-out"></div>
+    </div>
+  </div>
+
+  <h2>Troubleshooting</h2>
+  <div class="table-wrap"><table>
+    <tr><th>Symptom</th><th>Likely cause and fix</th></tr>
+    <tr><td><code>address already in use</code></td><td>Local port taken. Pick another or leave it blank.</td></tr>
+    <tr><td><code>connection refused</code> in the browser or in the kubectl output</td><td>Wrong remote port: the app is not listening there. Check <code>containerPort</code> and the Service's <code>port</code>/<code>targetPort</code>.</td></tr>
+    <tr><td>Works on the VM, not from your laptop</td><td>Missing <code>--address 0.0.0.0</code>, or the firewall blocks the port.</td></tr>
+    <tr><td>Tunnel stops by itself</td><td>The Pod restarted or was replaced; a Pod-targeted tunnel dies with it. Re-run the command, or target the Deployment or Service.</td></tr>
+    <tr><td><code>unable to forward ... pod not running</code></td><td>The Pod is Pending or crashing. Fix that first with <code>kubectl get pods</code> and <code>describe</code>.</td></tr>
+    <tr><td>https page shows a certificate warning</td><td>Normal for self-signed certs on the app side; accept it for local tests.</td></tr>
+  </table></div>
+  <div class="callout tip"><span class="callout-title">Tip</span>Port-forward to a Service still connects to <em>one</em> Pod behind it; it does not load-balance. It is a debugging and testing tool, not a way to serve users.</div>
+
+  <h2>Check yourself</h2>
+  <div class="quiz" data-answer="0">
+    <div class="q">What does <code>kubectl port-forward svc/web 8080:80</code> do?</div>
+    <div class="opts"><button>Makes localhost:8080 on your machine reach port 80 of the web Service</button><button>Makes port 80 on the node reach port 8080 of the Pod</button><button>Changes the Service to type NodePort</button></div>
+    <div class="explain">The format is local:remote. It changes nothing in the cluster; it only opens a tunnel.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">Your cluster runs on an EC2 instance. You run port-forward there, but your laptop cannot connect. What is missing?</div>
+    <div class="opts"><button>A NodePort Service</button><button>A second kubectl on the laptop</button><button><code>--address 0.0.0.0</code> (and an open firewall port)</button></div>
+    <div class="explain">By default the tunnel listens only on localhost of the machine running kubectl.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">How do you let kubectl pick a free local port?</div>
+    <div class="opts"><button>Use port 0:80 only</button><button>Leave the local part empty, like <code>:80</code></button><button>Add <code>--random</code></button></div>
+    <div class="explain">With an empty local port kubectl chooses a free one and prints it.</div>
+  </div>
+
+  <section class="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li><code>kubectl port-forward</code> is a temporary tunnel from a local port to a Pod, Deployment or Service port.</li>
+      <li>Syntax: <code>local:remote</code>. It stays open until you press Ctrl+C.</li>
+      <li>On a remote VM add <code>--address 0.0.0.0</code> and open the firewall, carefully.</li>
+      <li>Leave the local port empty (<code>:80</code>) to get a free random one.</li>
+      <li>It is for testing and debugging. Use Ingress or LoadBalancer for real traffic.</li>
+    </ul>
+  </section>
+</main>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+  function build() {
+    var kind = $("pf-kind").value, name = $("pf-name").value.trim() || "my-app";
+    var ns = $("pf-ns").value.trim(), local = $("pf-local").value.trim(), remote = $("pf-remote").value.trim() || "80";
+    var vm = $("pf-remotevm").checked;
+    var ok = /^\d*$/.test(local) && /^\d+$/.test(remote);
+    var cmd = "kubectl port-forward" + (vm ? " --address 0.0.0.0" : "") + " " + kind + "/" + name + (ns ? " -n " + ns : "") + " " + local + ":" + remote;
+    var out = $("pf-out");
+    if (!ok) { out.className = "output bad"; out.textContent = "Ports must be numbers."; return; }
+    out.className = "output ok";
+    var url = (vm ? "http://&lt;VM-public-IP&gt;:" : "http://localhost:") + (local || "&lt;port kubectl prints&gt;");
+    var notes = [];
+    if (!local) notes.push("kubectl will pick a free local port and print it.");
+    if (vm) notes.push("Open that port in the VM firewall, and close the tunnel when done.");
+    if (kind === "pod") notes.push("A Pod tunnel ends if the Pod is replaced.");
+    out.innerHTML = '<code id="pf-cmd">' + esc(cmd) + "</code><p style=\"margin:8px 0 0\">Then open <b>" + url + "</b></p>" +
+      (notes.length ? "<p style=\"margin:6px 0 0\">" + notes.join(" ") + "</p>" : "");
+  }
+  ["pf-kind", "pf-name", "pf-ns", "pf-local", "pf-remote", "pf-remotevm"].forEach(function (id) {
+    $(id).addEventListener("input", build); $(id).addEventListener("change", build);
+  });
+  build();
+})();
+</script>
+</body>
+</html>
