@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Managing Many Clusters (kOps) · Kubernetes Simplified</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/site.js"></script>
+</head>
+<body data-page="03">
+<main class="wrap">
+  <header class="page-head">
+    <h1>Managing Many Clusters (kOps)</h1>
+    <p class="lead">Learning clusters on a laptop is easy. Running real ones means creating, upgrading, changing and deleting them safely, often hundreds of times. You'll learn how Kubernetes is delivered in production and how a tool like kOps manages the whole lifecycle.</p>
+  </header>
+
+  <div class="xref-box"><div>This lesson assumes you know the control plane and worker nodes from <a href="02-architecture.html">Lesson 2: Architecture</a>.</div></div>
+
+  <h2>Local clusters vs production clusters</h2>
+  <p>Tools such as minikube, kind, k3s and MicroK8s are fantastic for learning and testing. But they are <strong>development environments</strong>: usually one node, small resources, and no high availability. Their own documentation says not to use them for production.</p>
+  <p>A DevOps or platform engineer's real job includes the <strong>cluster lifecycle</strong>:</p>
+  <ol class="steps">
+    <li><strong>Create</strong> a cluster with multiple control-plane and worker nodes.</li>
+    <li><strong>Configure</strong> it: node sizes, networking, access.</li>
+    <li><strong>Upgrade</strong> Kubernetes versions with little or no downtime (a whole topic, see <a href="16-cluster-upgrade.html">Lesson 16</a>).</li>
+    <li><strong>Delete</strong> clusters that are no longer needed, to stop paying for them.</li>
+  </ol>
+  <p>(For trying things on your own machine, see <a href="26-kind.html">Lesson 26: kind</a>.)</p>
+
+  <h2>Distributions and managed services</h2>
+  <p>Linux is open source, yet most people use a <strong>distribution</strong> such as Ubuntu, Red Hat or Amazon Linux: the same core with extras and support. Kubernetes works the same way. Companies wrap upstream Kubernetes with installers, a nicer experience and paid support:</p>
+  <ul>
+    <li><strong>OpenShift</strong> (Red Hat), <strong>Rancher</strong>, <strong>VMware Tanzu</strong></li>
+    <li><strong>Managed cloud services:</strong> EKS (AWS), AKS (Azure), GKE (Google)</li>
+    <li><strong>Plain upstream Kubernetes</strong>, installed and run by your own team</li>
+  </ul>
+  <p>Under the hood they are all Kubernetes. If you understand the architecture, you understand all of them; the difference is mostly who installs, supports and upgrades it.</p>
+
+  <div class="table-wrap"><table>
+    <tr><th></th><th>Self-managed (e.g. kOps, kubeadm)</th><th>Managed (EKS, AKS, GKE)</th></tr>
+    <tr><td>Control plane</td><td>You run it on your own machines</td><td>The provider runs and patches it</td></tr>
+    <tr><td>Support</td><td>Community, or your own team. The cloud only supports the VMs, not Kubernetes</td><td>Provider support for the cluster itself</td></tr>
+    <tr><td>Control</td><td>Full: every setting and component</td><td>Some settings fixed by the provider</td></tr>
+    <tr><td>Cost</td><td>Pay for machines; more engineering time</td><td>Usually a per-cluster fee plus nodes</td></tr>
+    <tr><td>Good for</td><td>Strong platform teams, custom needs, many cheap clusters</td><td>Teams who want less operational work</td></tr>
+  </table></div>
+  <div class="callout interview"><span class="callout-title">Interview angle</span>Nobody will ask about minikube in production. Expect "Which Kubernetes distribution do you use, and who handles upgrades?" Be ready to say how you create, upgrade and delete clusters.</div>
+
+  <h2>kOps: Kubernetes Operations</h2>
+  <p>Older tools such as <strong>kubeadm</strong> can create a cluster, but a lot is manual, and upgrades or changes are awkward. <strong>kOps</strong> (Kubernetes Operations) covers the <em>whole lifecycle</em>: create, update, upgrade, rolling restart, delete. Think "<code>kubectl</code> for clusters." It is most mature on AWS.</p>
+  <div class="callout analogy"><span class="callout-title">Think of it like…</span>A building contractor. You hand over a blueprint (the cluster spec). kOps compares it with what exists, builds or changes what's needed, and can tear it down when you're done.</div>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 700 230" role="img" aria-label="An engineer runs kops, which stores the cluster spec in an S3 state store and creates EC2 control plane and worker nodes with load balancer, networking and disks in AWS.">
+      <defs><marker id="arr3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" style="fill:var(--text-2)"/></marker></defs>
+      <rect class="s-box2" x="10" y="85" width="110" height="60" rx="8"/>
+      <text class="s-text-b" x="65" y="120" text-anchor="middle">kops CLI</text>
+      <rect class="s-purple" x="210" y="10" width="150" height="60" rx="8"/>
+      <text class="s-text-b" x="285" y="36" text-anchor="middle">S3 state store</text><text class="s-text-s" x="285" y="55" text-anchor="middle">desired cluster spec</text>
+      <rect class="s-dash" x="400" y="10" width="292" height="210" rx="12"/>
+      <text class="s-text-s" x="414" y="30">AWS</text>
+      <rect class="s-blue" x="420" y="45" width="250" height="50" rx="8"/>
+      <text class="s-text-b" x="545" y="76" text-anchor="middle">Control plane EC2 (x3 for HA)</text>
+      <rect class="s-green" x="420" y="108" width="250" height="50" rx="8"/>
+      <text class="s-text-b" x="545" y="139" text-anchor="middle">Worker EC2 (auto scaling group)</text>
+      <rect class="s-box" x="420" y="170" width="250" height="38" rx="8"/>
+      <text class="s-text-s" x="545" y="194" text-anchor="middle">VPC, load balancer, EBS, IAM</text>
+      <path class="s-line" d="M120 100 L208 50" marker-end="url(#arr3)"/>
+      <path class="s-line-o" d="M120 125 L418 125" marker-end="url(#arr3)"/>
+      <text class="s-text-s" x="215" y="150" text-anchor="middle">creates / updates</text>
+    </svg>
+    <figcaption>kOps keeps the desired cluster spec in a storage bucket, then builds and maintains the real machines to match.</figcaption>
+  </figure>
+
+  <h2>Hands-on outline</h2>
+  <p><strong>Prerequisites:</strong> an AWS account, an admin machine (an EC2 instance works) with <code>kops</code>, <code>kubectl</code> and the AWS CLI installed, and AWS credentials with EC2, S3, IAM and VPC permissions. Running a real cluster costs money, so delete it when finished.</p>
+  <p><strong>1. Create a state store.</strong> kOps needs somewhere to keep each cluster's configuration. It uses an S3 bucket (bucket names are global, so pick a unique one).</p>
+<pre><code>aws s3 mb s3://my-kops-state-12345 --region us-east-1
+export KOPS_STATE_STORE=s3://my-kops-state-12345</code></pre>
+  <p><strong>2. Define the cluster.</strong> A cluster name ending in <code>.k8s.local</code> uses built-in "gossip" DNS, so you don't need to own a domain.</p>
+<pre><code>kops create cluster \
+  --name=demo.k8s.local \
+  --zones=us-east-1a \
+  --node-count=2 \
+  --node-size=t3.medium \
+  --control-plane-size=t3.medium</code></pre>
+  <p>This only <em>writes the spec to S3</em>. Nothing is built yet, which lets you review or edit it first (<code>kops edit cluster demo.k8s.local</code>).</p>
+  <p><strong>3. Build it.</strong></p>
+<pre><code>kops update cluster --name demo.k8s.local --yes --admin
+kops validate cluster --wait 10m     # waits until nodes are Ready
+kubectl get nodes</code></pre>
+  <p><strong>4. Change or upgrade.</strong> Edit the spec (new Kubernetes version, bigger nodes), apply it, then replace machines one at a time:</p>
+<pre><code>kops edit cluster demo.k8s.local
+kops update cluster --name demo.k8s.local --yes
+kops rolling-update cluster --name demo.k8s.local --yes</code></pre>
+  <p>The rolling update drains and replaces nodes gradually, so apps stay up if they have several replicas.</p>
+  <p><strong>5. Delete.</strong> This removes the machines, load balancers and disks it created.</p>
+<pre><code>kops delete cluster --name demo.k8s.local --yes</code></pre>
+  <div class="callout warn"><span class="callout-title">Watch out</span>Flag names change between kOps versions (for example <code>--master-size</code> became <code>--control-plane-size</code>). Check <code>kops create cluster --help</code> for your version. And always delete practice clusters, since running EC2 instances keep billing.</div>
+
+  <div class="demo" id="demo-life">
+    <div class="demo-head">Try it: cluster lifecycle explorer</div>
+    <div class="demo-body">
+      <p>Pick a stage to see the command and what happens behind the scenes.</p>
+      <div class="row">
+        <select id="lf-stage" aria-label="Lifecycle stage">
+          <option value="create">Create the spec</option>
+          <option value="update">Build the cluster</option>
+          <option value="validate">Validate</option>
+          <option value="edit">Change settings</option>
+          <option value="roll">Apply changes to nodes</option>
+          <option value="delete">Delete</option>
+        </select>
+      </div>
+      <div class="output" id="lf-out"></div>
+    </div>
+  </div>
+
+  <h2>Managing hundreds of clusters</h2>
+  <p>Large companies have many clusters (per team, per region, per environment). What makes this manageable:</p>
+  <ul>
+    <li><strong>Everything is described in files.</strong> The spec lives in the state store (and can be exported to Git), so a cluster can be recreated or compared at any time.</li>
+    <li><strong>One tool, same commands</strong> for every cluster; only the name changes.</li>
+    <li><strong>Automation.</strong> Teams call these commands from CI pipelines or Terraform rather than typing them by hand.</li>
+    <li><strong>Standard versions.</strong> Fewer Kubernetes versions across the fleet means fewer surprises and simpler upgrades.</li>
+    <li><strong>Cost control.</strong> Developers test in local or short-lived clusters; expensive managed or production clusters are kept for real workloads.</li>
+  </ul>
+  <p>Other options exist (kubeadm, Kubespray, Cluster API, or eksctl for EKS, used in <a href="17-eks-end-to-end.html">Lesson 17</a>), but the lifecycle questions are always the same.</p>
+
+  <h2>Check yourself</h2>
+  <div class="quiz" data-answer="1">
+    <div class="q">Why shouldn't minikube be used for production?</div>
+    <div class="opts"><button>It can't run any containers</button><button>It's a single-node development tool without high availability or production support</button><button>It only works on Windows</button></div>
+    <div class="explain">Local tools are for learning and testing. Production needs HA control planes, real capacity and proper upgrades.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">What is the S3 bucket used for in a kOps setup?</div>
+    <div class="opts"><button>Storing your application images</button><button>Running the worker nodes</button><button>Storing the cluster configuration (the state store)</button></div>
+    <div class="explain">kOps keeps each cluster's desired spec in the state store and builds the cluster from it.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">You run <code>kops create cluster</code> without <code>--yes</code>. What happened?</div>
+    <div class="opts"><button>Only the spec was saved; no machines were created yet</button><button>The full cluster was built</button><button>The cluster was deleted</button></div>
+    <div class="explain">Creation is a two-step process. <code>kops update cluster --yes</code> actually builds it.</div>
+  </div>
+
+  <section class="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li>Local tools (minikube, kind, k3s) are for learning; production needs a real distribution or managed service.</li>
+      <li>Distributions (OpenShift, Rancher, Tanzu) and managed services (EKS, AKS, GKE) are Kubernetes plus installers and support.</li>
+      <li>The cluster lifecycle is create, configure, upgrade, delete. kOps manages all of it from a spec in a state store.</li>
+      <li>Typical flow: <code>create cluster</code>, <code>update cluster --yes</code>, <code>validate cluster</code>, <code>rolling-update cluster</code>, <code>delete cluster</code>.</li>
+      <li>At scale: describe clusters as files, automate, standardise versions, delete what you don't use.</li>
+    </ul>
+  </section>
+</main>
+<script>
+(function () {
+  var D = {
+    create: ["kops create cluster --name=demo.k8s.local --zones=us-east-1a --node-count=2", "Writes the cluster spec into the S3 state store. No cloud resources yet, so you can still review or edit it."],
+    update: ["kops update cluster --name demo.k8s.local --yes --admin", "Reads the spec and creates the VPC pieces, EC2 instances, auto scaling groups, load balancer and disks. Also writes your kubeconfig."],
+    validate: ["kops validate cluster --wait 10m", "Checks that the control plane and every node are up and Ready, and that system Pods are healthy. Exits with success when the cluster is usable."],
+    edit: ["kops edit cluster demo.k8s.local", "Opens the spec in your editor. Change the Kubernetes version, node sizes or networking. Saved back to the state store."],
+    roll: ["kops rolling-update cluster --name demo.k8s.local --yes", "Drains and replaces machines one by one so they match the new spec, keeping the app available."],
+    del: ["kops delete cluster --name demo.k8s.local --yes", "Removes everything kOps created: machines, load balancer, disks, and the spec. Stops the billing."]
+  };
+  D["delete"] = D.del;
+  var sel = document.getElementById("lf-stage"), out = document.getElementById("lf-out");
+  function show() {
+    var d = D[sel.value];
+    out.className = "output";
+    out.innerHTML = "<code>" + d[0] + "</code><p style=\"margin:8px 0 0\">" + d[1] + "</p>";
+  }
+  sel.addEventListener("change", show);
+  show();
+})();
+</script>
+</body>
+</html>
