@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ingress: Live Demo · Kubernetes Simplified</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/site.js"></script>
+<style>
+  .dg-grid select { width: 100%; }
+  .dg-cmd { font: 13px/1.5 var(--mono); background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; margin: 6px 0; word-break: break-word; }
+</style>
+</head>
+<body data-page="10">
+<main class="wrap">
+  <header class="page-head">
+    <h1>Ingress: Live Demo</h1>
+    <p class="lead">Set up Ingress on a local cluster from zero: confirm the app works through a Service, write a host and path rule, install an NGINX ingress controller, and test it. You'll also learn to read the controller's logs and fix the usual "it does nothing" problems.</p>
+  </header>
+
+  <div class="xref-box"><div>Why Ingress exists, how controllers work and TLS are covered in <a href="09-ingress-tls.html">Lesson 9</a>. This lesson only walks through the setup. It reuses the Deployment and Service from <a href="08-services-deep-dive.html">Lesson 8</a>.</div></div>
+
+  <h2>Before you start</h2>
+  <p>You need a running Minikube cluster and the sample app from the previous lesson: a Deployment with Pods labelled <code>app=sample-python-app</code>, listening on 8000 and answering at <code>/demo</code>, exposed by a Service called <code>sample-python-app</code> on port 80.</p>
+<pre><code>kubectl get pods
+kubectl get svc sample-python-app</code></pre>
+  <p>If you deleted them, re-create both using <a href="08-services-deep-dive.html">Lesson 8</a>. An Ingress can point at a plain <code>ClusterIP</code> Service; it does not need NodePort or LoadBalancer.</p>
+
+  <h2>Step 1: confirm the Service works first</h2>
+  <p>Always test the layer below before adding a new one. If the Service is broken, Ingress cannot fix it.</p>
+<pre><code>curl -L http://$(minikube ip):30007/demo      # only if your Service is NodePort
+# or, from inside the cluster:
+kubectl run tmp --rm -it --image=busybox:1.36 --restart=Never -- wget -qO- http://sample-python-app/demo</code></pre>
+  <p>You should see the app's text back. Good: Pods are healthy and the Service finds them.</p>
+
+  <h2>Step 2: write the Ingress rule</h2>
+  <p>We want requests for <code>foo.bar.com</code> with the path <code>/bar</code> to reach the Service. Create <code>ingress.yaml</code> (start from the example in the Kubernetes docs and change the host, path and service name):</p>
+<pre><code>apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ingress-example
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: foo.bar.com
+      http:
+        paths:
+          - path: /bar
+            pathType: Prefix
+            backend:
+              service:
+                name: sample-python-app     # your Service name
+                port:
+                  number: 80                # the Service port, not 8000</code></pre>
+<pre><code>kubectl apply -f ingress.yaml
+kubectl get ingress</code></pre>
+  <pre><code>NAME              CLASS   HOSTS         ADDRESS   PORTS   AGE
+ingress-example   nginx   foo.bar.com             80      5s</code></pre>
+  <p>The <code>ADDRESS</code> column is empty, and requests would do nothing. That is expected: no controller exists yet to read the rule.</p>
+
+  <h2>Step 3: install an ingress controller</h2>
+  <p>On Minikube the easiest way is the built-in add-on, which installs the NGINX ingress controller:</p>
+<pre><code>minikube addons enable ingress</code></pre>
+  <p>The controller is just a Pod, in its own namespace. Check that it is running:</p>
+<pre><code>kubectl get pods -n ingress-nginx
+# ingress-nginx-controller-xxxxx   1/1   Running</code></pre>
+  <div class="callout tip"><span class="callout-title">Tip</span>On a real cluster you install a controller from its own documentation, usually with Helm or a manifest. Search "ingress-nginx install" (or your chosen controller). Do this once per cluster. After that, every new app only needs its own Ingress YAML.</div>
+
+  <h3>Check the controller noticed your rule</h3>
+<pre><code>kubectl logs -n ingress-nginx deploy/ingress-nginx-controller | tail
+# ... Ignoring ... / successfully synced ... Ingress "default/ingress-example"</code></pre>
+  <p>A line showing the Ingress was synced means the controller rewrote its <code>nginx.conf</code> for your rule. If the Ingress was created before the controller, it may take a moment, or you can re-apply the file. Now check the address:</p>
+<pre><code>kubectl get ingress
+# NAME              CLASS   HOSTS         ADDRESS        PORTS
+# ingress-example   nginx   foo.bar.com   192.168.64.11  80</code></pre>
+  <p>The address is filled in, so the controller has picked up the Ingress.</p>
+  <div class="callout"><span class="callout-title">Note</span>With Minikube's Docker driver on macOS or Windows, the address may stay empty or unreachable. Run <code>minikube tunnel</code> in a separate terminal and use <code>127.0.0.1</code> as the target IP instead.</div>
+
+  <h2>Step 4: make the hostname resolve</h2>
+  <p><code>foo.bar.com</code> is not a real domain, so your laptop does not know where it is. In production your company owns a real domain with a DNS record pointing to the load balancer, and this step does not exist. Locally you have two options.</p>
+  <p><strong>Option A: pretend with <code>/etc/hosts</code></strong> (edit with sudo; remove it later):</p>
+<pre><code>echo "$(kubectl get ingress ingress-example -o jsonpath='{.status.loadBalancer.ingress[0].ip}') foo.bar.com" | sudo tee -a /etc/hosts
+curl -L http://foo.bar.com/bar</code></pre>
+  <p><strong>Option B: no file changes, tell curl where to connect:</strong></p>
+<pre><code>curl --resolve foo.bar.com:80:$(minikube ip) http://foo.bar.com/bar
+# or just set the Host header against the IP:
+curl -H "Host: foo.bar.com" http://$(minikube ip)/bar</code></pre>
+  <p>The rule matches on the <code>Host</code> header, so both ways work. If you call the IP with no host header, you get a <code>404</code> from NGINX, which is exactly what the rule is supposed to do.</p>
+
+  <div class="callout warn"><span class="callout-title">Watch out about paths</span>The rule forwards <code>/bar</code> as-is to your app. Our sample app serves <code>/demo</code>, not <code>/bar</code>, so the app itself may return its own 404. To see the app's page, either set the rule path to <code>/demo</code> or add the NGINX annotation <code>nginx.ingress.kubernetes.io/rewrite-target: /demo</code>. Telling "Ingress 404" from "app 404" matters: the NGINX 404 page says <em>nginx</em> at the bottom.</div>
+
+  <h2>Step 5: try more rules</h2>
+  <p>Edit <code>ingress.yaml</code> and re-apply to explore what <a href="09-ingress-tls.html">Lesson 9</a> described:</p>
+  <ul>
+    <li><strong>Path-based:</strong> add a second path such as <code>/second</code> pointing at another Service.</li>
+    <li><strong>Wildcard host:</strong> use <code>host: "*.bar.com"</code>, then <code>curl -H "Host: example.bar.com" ...</code> also works. Quote the value.</li>
+    <li><strong>TLS:</strong> create a TLS Secret and add a <code>tls:</code> block as shown in Lesson 9.</li>
+  </ul>
+
+  <div class="demo" id="demo-diag">
+    <div class="demo-head">Try it: Ingress troubleshooter</div>
+    <div class="demo-body">
+      <p>Pick what you see. The tool suggests the cause and the command to confirm it.</p>
+      <div class="dg-grid">
+        <label for="dg-sym">Symptom</label>
+        <select id="dg-sym">
+          <option value="noaddr">kubectl get ingress shows an empty ADDRESS</option>
+          <option value="nginx404">curl returns a 404 page from nginx</option>
+          <option value="app404">curl returns 404 from my app (not nginx)</option>
+          <option value="503">curl returns 503 Service Temporarily Unavailable</option>
+          <option value="resolve">curl: Could not resolve host: foo.bar.com</option>
+          <option value="timeout">curl hangs or times out on the ingress IP</option>
+        </select>
+      </div>
+      <div class="row"><button class="btn primary" id="dg-go">Diagnose</button></div>
+      <div class="output" id="dg-out">Choose a symptom and press <b>Diagnose</b>.</div>
+    </div>
+  </div>
+
+  <h2>Debug checklist</h2>
+  <ol class="steps">
+    <li><code>kubectl get pods -n ingress-nginx</code>: is the controller running?</li>
+    <li><code>kubectl get ingress</code> and <code>kubectl describe ingress ingress-example</code>: is the class right, is there an address, and what backends does it show?</li>
+    <li><code>kubectl get endpoints sample-python-app</code>: does the Service have Pod IPs? (Empty means a selector problem, see <a href="06-services-intro.html">Lesson 6</a>.)</li>
+    <li><code>kubectl logs -n ingress-nginx deploy/ingress-nginx-controller</code>: did the controller pick up the Ingress, and does it log your request?</li>
+  </ol>
+
+  <h2>Clean up</h2>
+<pre><code>kubectl delete -f ingress.yaml
+sudo sed -i '/foo.bar.com/d' /etc/hosts      # if you edited it (use sed -i '' on macOS)
+minikube addons disable ingress</code></pre>
+
+  <h2>Check yourself</h2>
+  <div class="quiz" data-answer="0">
+    <div class="q">You applied an Ingress but <code>ADDRESS</code> is empty and requests fail. What should you check first?</div>
+    <div class="opts"><button>Whether an ingress controller is installed and its class matches <code>ingressClassName</code></button><button>Whether the Pods have more CPU</button><button>Whether the Service is type ExternalName</button></div>
+    <div class="explain">Ingress rules do nothing until a controller with a matching class reads them.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">In the Ingress backend, which port number goes in <code>port.number</code>?</div>
+    <div class="opts"><button>The container's port (8000)</button><button>The nodePort (30007)</button><button>The Service's port (80)</button></div>
+    <div class="explain">The Ingress sends traffic to the Service, so it uses the Service port. The Service then forwards to targetPort.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">Why do you edit <code>/etc/hosts</code> in this demo but not in production?</div>
+    <div class="opts"><button>Production clusters ignore host names</button><button>Locally <code>foo.bar.com</code> is not a real domain, while production has a real DNS record for the load balancer</button><button>Ingress only works with /etc/hosts</button></div>
+    <div class="explain">DNS normally maps your real domain to the load balancer. The hosts file fakes that mapping on your laptop.</div>
+  </div>
+
+  <section class="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li>Test the Service first, then add the Ingress. Ingress points at a <strong>Service name and Service port</strong>.</li>
+      <li>An Ingress has no effect until a <strong>controller</strong> is installed; on Minikube: <code>minikube addons enable ingress</code>.</li>
+      <li>A filled <code>ADDRESS</code> and a "synced" log line show the controller picked up your rule.</li>
+      <li>Local testing needs a hosts-file entry or <code>curl --resolve</code> / a <code>Host</code> header; production uses real DNS.</li>
+      <li>Debug in order: controller Pod, Ingress, endpoints, controller logs.</li>
+    </ul>
+  </section>
+</main>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var D = {
+    noaddr: ["Cause: no ingress controller is running, or its class does not match <code>ingressClassName</code>.", "kubectl get pods -n ingress-nginx<br>kubectl get ingressclass<br>kubectl describe ingress ingress-example"],
+    nginx404: ["Cause: the controller works, but no rule matches your Host header or path. Common: calling the bare IP without a Host header, or a typo in host or path.", "curl -H \"Host: foo.bar.com\" http://$(minikube ip)/bar<br>kubectl describe ingress ingress-example"],
+    app404: ["Cause: the Ingress routed correctly, but your app has no page at that path (we sent <code>/bar</code>, the app serves <code>/demo</code>). Change the rule path or use a rewrite-target annotation.", "kubectl logs -l app=sample-python-app --prefix"],
+    "503": ["Cause: the rule matched, but the Service has no ready endpoints. Usually a selector typo, a wrong Service name or port in the Ingress, or Pods that are not Ready.", "kubectl get endpoints sample-python-app<br>kubectl get pods --show-labels<br>kubectl describe ingress ingress-example   # check Backends"],
+    resolve: ["Cause: your machine does not know the domain. Add a /etc/hosts entry, or skip DNS with <code>--resolve</code> or a Host header.", "curl --resolve foo.bar.com:80:$(minikube ip) http://foo.bar.com/bar"],
+    timeout: ["Cause: the IP is not reachable from your machine, such as the Minikube Docker driver on macOS/Windows or a firewall. Try <code>minikube tunnel</code> and use 127.0.0.1.", "minikube tunnel<br>curl -H \"Host: foo.bar.com\" http://127.0.0.1/bar"]
+  };
+  $("dg-go").addEventListener("click", function () {
+    var d = D[$("dg-sym").value];
+    $("dg-out").className = "output";
+    $("dg-out").innerHTML = "<p style=\"margin:0 0 6px\">" + d[0] + "</p><div class=\"dg-cmd\">" + d[1] + "</div>";
+  });
+})();
+</script>
+</body>
+</html>
