@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Securing Kubernetes Like a Pro · Kubernetes Simplified</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/site.js"></script>
+<style>
+  .chk { list-style: none; padding: 0; margin: 0; }
+  .chk li { margin: 6px 0; }
+  .chk label { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; }
+  .meter { height: 12px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--border); overflow: hidden; margin: 10px 0 4px; }
+  .meter span { display: block; height: 100%; width: 0; background: var(--green); transition: width .25s; }
+</style>
+</head>
+<body data-page="23">
+<main class="wrap">
+  <header class="page-head">
+    <h1>Securing Kubernetes Like a Pro</h1>
+    <p class="lead">A default cluster is built for convenience, not safety. This lesson is the DevSecOps checklist: seven layers of protection, from the API server at the front door to the container images you run, with the commands and YAML to apply each one.</p>
+  </header>
+
+  <div class="xref-box"><div>Architecture terms (API server, etcd, kubelet) come from <a href="02-architecture.html">Lesson 2</a>. RBAC is covered fully in <a href="11-rbac.html">Lesson 11</a>, Secrets in <a href="13-configmaps-secrets-project.html">Lesson 13</a>, and monitoring in <a href="14-monitoring-prometheus-grafana.html">Lesson 14</a>.</div></div>
+
+  <h2>Security in layers</h2>
+  <p>No single control makes a cluster safe. Good teams use <strong>defense in depth</strong>: if an attacker gets past one layer, the next one still stops them. Here are the layers, roughly from the outside in.</p>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 680 250" role="img" aria-label="Concentric layers: API server and RBAC on the outside, then network policies, pod security and images, with etcd encryption protecting stored data.">
+      <rect class="s-box" x="10" y="10" width="660" height="230" rx="14"/>
+      <text class="s-text-b" x="30" y="34">1. API server: TLS + restricted access</text>
+      <rect class="s-blue" x="40" y="48" width="600" height="182" rx="12"/>
+      <text class="s-text-b" x="58" y="72">2. RBAC: who can do what</text>
+      <rect class="s-purple" x="70" y="86" width="540" height="134" rx="10"/>
+      <text class="s-text-b" x="88" y="110">3. Network policies: who can talk to whom</text>
+      <rect class="s-green" x="100" y="124" width="480" height="86" rx="10"/>
+      <text class="s-text-b" x="118" y="148">4. Pod security + 5. Scanned images</text>
+      <rect class="s-orange-soft" x="130" y="160" width="420" height="40" rx="8"/>
+      <text class="s-text-b" x="340" y="185" text-anchor="middle">6. Encrypted etcd (secrets at rest)</text>
+    </svg>
+    <figcaption>Each layer is a separate lock. Monitoring (7) watches all of them and upgrades keep every layer patched.</figcaption>
+  </figure>
+
+  <h2>1. Secure the API server</h2>
+  <p>Every request, from <code>kubectl</code>, a CI job or an attacker, goes through the <strong>API server</strong>. It is the front door, so protect it first.</p>
+  <ul>
+    <li><strong>Use TLS.</strong> Like the padlock in your browser for https, TLS encrypts traffic and proves the server is genuine. The API server is configured with a certificate, a private key and a client CA. On kubeadm-style clusters it is a static Pod defined in <code>/etc/kubernetes/manifests/kube-apiserver.yaml</code> with flags:
+<pre><code>--tls-cert-file=/etc/kubernetes/pki/apiserver.crt
+--tls-private-key-file=/etc/kubernetes/pki/apiserver.key
+--client-ca-file=/etc/kubernetes/pki/ca.crt</code></pre>
+    Certificates can be self-signed or issued by a certificate authority. Managed services (EKS, AKS, GKE) do this for you.</li>
+    <li><strong>Restrict who reaches it.</strong> Disable anonymous access (<code>--anonymous-auth=false</code>), limit network access to the API endpoint (firewall or private endpoint), and use RBAC for authorization.</li>
+    <li><strong>Keep an audit trail.</strong> Audit logging (<code>--audit-policy-file</code>, <code>--audit-log-path</code>) records who did what and when, so you can investigate later.</li>
+  </ul>
+  <div class="callout tip"><span class="callout-title">Tip</span>Production clusters use three control plane nodes for high availability. If one fails, the API server keeps answering from the others.</div>
+
+  <h2>2. RBAC: least privilege</h2>
+  <p>Authentication proves who you are; <strong>RBAC</strong> (role-based access control) decides what you may do. With thousands of users and many Pods using the API (CI tools, operators), give each only what it needs: a Role listing allowed verbs on resources, and a binding that attaches it to a user or service account. A tester should not be able to delete production Deployments. Details and commands are in <a href="11-rbac.html">Lesson 11</a>. RBAC applies to all resources, not just the API server.</p>
+
+  <h2>3. Network policies</h2>
+  <p>By default <strong>every Pod can talk to every other Pod</strong>, even across namespaces. If a front-end Pod is compromised, it could reach your user database. A <strong>NetworkPolicy</strong> is a firewall rule for Pods. A common start is "deny all incoming traffic in this namespace", then allow only what is needed:</p>
+<pre><code>apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: finance
+spec:
+  podSelector: {}        # every Pod in the namespace
+  policyTypes:
+  - Ingress              # no ingress rules listed = nothing allowed in</code></pre>
+<pre><code>apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-api-to-db
+  namespace: finance
+spec:
+  podSelector:
+    matchLabels:
+      app: db
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: api
+    ports:
+    - protocol: TCP
+      port: 5432</code></pre>
+  <div class="callout warn"><span class="callout-title">Watch out</span>NetworkPolicies are enforced by the cluster's network plugin (CNI). Plugins such as Calico or Cilium enforce them; some simple setups silently ignore them. Test that traffic is really blocked.</div>
+
+  <h2>4. Pod security</h2>
+  <p>A container running as <strong>root</strong> is a risk: if it is hacked, the attacker has strong powers inside. Set safe defaults in the Pod spec:</p>
+<pre><code>spec:
+  securityContext:
+    runAsNonRoot: true
+  containers:
+  - name: app
+    image: myapp:1.4.2
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop: ["ALL"]</code></pre>
+  <p>To <em>enforce</em> this across a namespace, use the built-in <strong>Pod Security Admission</strong>, which rejects Pods that break a standard (<code>privileged</code>, <code>baseline</code>, <code>restricted</code>):</p>
+<pre><code>kubectl label namespace finance pod-security.kubernetes.io/enforce=restricted</code></pre>
+
+  <h2>5. Secure container images</h2>
+  <p>Your cluster is only as safe as the images it runs. An image may contain an old base OS or a library with a known <strong>vulnerability</strong> (a bug attackers can exploit). Check images <em>before</em> they reach production, ideally in your CI pipeline:</p>
+<pre><code>trivy image myrepo/myapp:1.4.2 --severity HIGH,CRITICAL
+# similar tools: Snyk, Clair, Quay's scanner</code></pre>
+  <ul>
+    <li>Pin a specific base image version instead of <code>latest</code>; prefer small bases (slim, distroless).</li>
+    <li>If scanning finds problems, update the base image or the vulnerable package, rebuild and rescan.</li>
+    <li>Pull only from registries you trust; fail the pipeline on critical findings.</li>
+  </ul>
+
+  <h2>6. Encrypt secrets in etcd</h2>
+  <p>Every Kubernetes object, including Secrets (passwords, tokens, keys), is stored in <strong>etcd</strong>. You may have locked Secrets down with RBAC, but an attacker who reaches etcd, or a backup of it, can read them all. Worse, a Secret is only base64-encoded by default, which is not encryption. <strong>Encryption at rest</strong> makes the API server encrypt data before writing it:</p>
+<pre><code>apiVersion: apiserver.config.k8s.io/v1
+kind: EncryptionConfiguration
+resources:
+- resources: ["secrets"]
+  providers:
+  - aescbc:
+      keys:
+      - name: key1
+        secret: &lt;base64-encoded 32-byte key&gt;
+  - identity: {}      # lets it still read old, unencrypted data</code></pre>
+  <p>Point the API server at it with <code>--encryption-provider-config=/path/to/file</code>. Existing Secrets are only encrypted when rewritten (<code>kubectl get secrets -A -o json | kubectl replace -f -</code>). Managed clouds usually offer this as a setting using their key service.</p>
+
+  <h2>7. Monitor, then upgrade</h2>
+  <p>Even with every control in place you need to <em>notice</em> trouble. Imagine someone opens a shell in a Pod and reads <code>/etc/shadow</code>. Runtime security tools such as <strong>Falco</strong> or <strong>Sysdig</strong> run as a DaemonSet (one Pod on every node), watch system calls, and alert on suspicious behaviour like a shell in a container or a root process. Combine this with the metrics tooling in <a href="14-monitoring-prometheus-grafana.html">Lesson 14</a>.</p>
+  <p>Finally, <strong>upgrade often</strong>. Old Kubernetes versions stop getting security fixes. The same goes for node operating systems and add-ons. The procedure is in <a href="16-cluster-upgrade.html">Lesson 16</a>.</p>
+
+  <div class="demo" id="demo-sec">
+    <div class="demo-head">Try it: cluster hardening checklist</div>
+    <div class="demo-body">
+      <p>Tick what your cluster already does to see how many layers you have covered.</p>
+      <ul class="chk" id="sec-list">
+        <li><label><input type="checkbox"> API server uses TLS, anonymous access off</label></li>
+        <li><label><input type="checkbox"> RBAC with least privilege</label></li>
+        <li><label><input type="checkbox"> NetworkPolicies (default deny)</label></li>
+        <li><label><input type="checkbox"> Pods run non-root (Pod Security Admission)</label></li>
+        <li><label><input type="checkbox"> Images scanned in CI</label></li>
+        <li><label><input type="checkbox"> Secrets encrypted in etcd</label></li>
+        <li><label><input type="checkbox"> Runtime monitoring and audit logs</label></li>
+        <li><label><input type="checkbox"> Regular upgrades</label></li>
+      </ul>
+      <div class="meter"><span id="sec-bar"></span></div>
+      <div class="output" id="sec-out">0 of 8 layers covered.</div>
+    </div>
+  </div>
+
+  <div class="callout interview"><span class="callout-title">Interview angle</span>"How do you secure a Kubernetes cluster?" Walk the layers: API server (TLS, restricted access, audit), RBAC with least privilege, network policies, non-root pods, image scanning, encrypted etcd, runtime monitoring and regular upgrades. Mention <em>defense in depth</em>.</div>
+
+  <h2>Check yourself</h2>
+  <div class="quiz" data-answer="1">
+    <div class="q">RBAC blocks users from reading Secrets, yet an attacker still reads them. Which gap is the likely cause?</div>
+    <div class="opts"><button>No NetworkPolicies</button><button>Secrets are unencrypted in etcd and the attacker read etcd directly</button><button>The image used <code>latest</code></button></div>
+    <div class="explain">RBAC only protects the API. Encryption at rest protects the data stored in etcd.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">With no NetworkPolicies in place, which Pods can reach your database Pod?</div>
+    <div class="opts"><button>Only Pods in the same namespace</button><button>Only Pods with a matching label</button><button>Any Pod in the cluster</button></div>
+    <div class="explain">Kubernetes is open by default. A NetworkPolicy is how you restrict it.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">Where is the best place to scan container images for vulnerabilities?</div>
+    <div class="opts"><button>In the CI pipeline, before the image is deployed</button><button>Only after an incident</button><button>Inside etcd</button></div>
+    <div class="explain">Catching problems before deployment is cheaper and safer. Tools such as Trivy fit into a pipeline step.</div>
+  </div>
+
+  <section class="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li>Everything goes through the <strong>API server</strong>: use TLS, restrict access and enable audit logs.</li>
+      <li>Apply <strong>least privilege</strong> with RBAC and run Pods as non-root with Pod Security settings.</li>
+      <li>Pods talk freely by default; <strong>NetworkPolicies</strong> restrict traffic.</li>
+      <li>Scan images in CI and <strong>encrypt Secrets</strong> in etcd; base64 is not encryption.</li>
+      <li>Watch runtime behaviour (Falco, Sysdig) and <strong>upgrade regularly</strong>.</li>
+    </ul>
+  </section>
+</main>
+<script>
+(function () {
+  var boxes = document.querySelectorAll("#sec-list input");
+  function update() {
+    var n = 0;
+    for (var i = 0; i < boxes.length; i++) if (boxes[i].checked) n++;
+    document.getElementById("sec-bar").style.width = (n / boxes.length * 100) + "%";
+    var msg = n + " of " + boxes.length + " layers covered. ";
+    msg += n === boxes.length ? "Nice: defense in depth." : (n < 4 ? "Plenty of gaps: start with RBAC and network policies." : "Good progress: close the remaining gaps.");
+    document.getElementById("sec-out").textContent = msg;
+  }
+  for (var i = 0; i < boxes.length; i++) boxes[i].addEventListener("change", update);
+})();
+</script>
+</body>
+</html>
