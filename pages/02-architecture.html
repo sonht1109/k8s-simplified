@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kubernetes Architecture · Kubernetes Simplified</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/site.js"></script>
+<style>
+  .hl { stroke: var(--orange, #f59e0b) !important; stroke-width: 4 !important; }
+  .step-msg { margin: 8px 0 0; }
+</style>
+</head>
+<body data-page="02">
+<main class="wrap">
+  <header class="page-head">
+    <h1>Kubernetes Architecture</h1>
+    <p class="lead">A Kubernetes cluster has a "brain" (the control plane) and "muscle" (the worker nodes). You'll meet every component, learn what each one does, and follow a request from kubectl all the way to a running container.</p>
+  </header>
+
+  <div class="xref-box"><div>New here? <a href="01-intro-to-kubernetes.html">Lesson 1</a> explains what Kubernetes is and why we use it.</div></div>
+
+  <h2>Learn it by comparing with Docker</h2>
+  <p>Lists of components are easy to forget, so let's <em>derive</em> them. Start with what happens in Docker, then see what Kubernetes needs on top. The four things Kubernetes adds over Docker (<a href="01-intro-to-kubernetes.html">Lesson 1</a>) are: a cluster, auto-healing, auto-scaling, and enterprise features like advanced load balancing, security and networking.</p>
+  <p><strong>Docker.</strong> On a machine with Docker, you type <code>docker run</code> and a container starts. Under the hood, a <strong>container runtime</strong> does the real work. A Java app can't run without a Java runtime; likewise a container can't run without a container runtime.</p>
+  <p><strong>Kubernetes.</strong> The smallest thing you deploy is a <strong>Pod</strong>, a wrapper around your container with extra abilities (<a href="04-pods.html">Lesson 4</a>). Your request does not go straight to a worker machine. It always goes through the <strong>control plane</strong> first. To see why, build up from the worker.</p>
+  <ul>
+    <li><strong>Something must keep the Pod running</strong> (Docker has an engine for that). In Kubernetes it's the <strong>kubelet</strong>. Because Kubernetes promises auto-healing, the kubelet also keeps checking "is the Pod running?" and reports back to the control plane if not.</li>
+    <li><strong>Something must run the container.</strong> That's the <strong>container runtime</strong>. In Docker you only get Docker's own. Kubernetes is more open: it defines a standard called the <strong>Container Runtime Interface (CRI)</strong>, so containerd, CRI-O or Docker's runtime can all be used, as long as they implement it.</li>
+    <li><strong>Something must give Pods networking.</strong> Docker has its default bridge network. In Kubernetes every Pod needs an IP address, and because of auto-scaling (say, 2 replicas) traffic must be split, "50% here, 50% there." That's <strong>kube-proxy</strong>: IP addressing plus basic load balancing, using the Linux <code>iptables</code> rules on each node.</li>
+  </ul>
+  <p>Those three (kubelet, kube-proxy, container runtime) form the <strong>worker node</strong>, also called the <strong>data plane</strong>. Together they have everything needed to run an app. So why a control plane? Because a cluster with many users and many nodes needs a "heart": someone to decide which node gets the Pod, to receive and secure every request, to remember the cluster's state, and to keep the controllers running. That's the next set of components.</p>
+
+  <h2>The big picture</h2>
+  <p>A <strong>cluster</strong> is a group of machines working together. They come in two roles:</p>
+  <ul>
+    <li><strong>Control plane</strong> (older name: master node): makes the decisions. It stores the cluster's data, decides where Pods run, and reacts to changes.</li>
+    <li><strong>Worker nodes</strong>: the machines that actually run your containers.</li>
+  </ul>
+  <div class="callout analogy"><span class="callout-title">Think of it like…</span>A restaurant. The <strong>manager's office</strong> (control plane) takes orders, keeps the books, and assigns tables to waiters. The <strong>kitchen and floor staff</strong> (worker nodes) cook and serve the food.</div>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 700 380" role="img" aria-label="Architecture diagram. A user with kubectl talks to the API server in the control plane. The control plane contains the API server, etcd, scheduler, controller manager and cloud controller manager. Two worker nodes each contain kubelet, kube-proxy, a container runtime and Pods.">
+      <defs><marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" style="fill:var(--text-2)"/></marker></defs>
+      <rect class="s-box2" x="8" y="60" width="86" height="50" rx="8"/>
+      <text class="s-text-b" x="51" y="90" text-anchor="middle">kubectl</text>
+      <rect class="s-dash" x="130" y="8" width="562" height="170" rx="12"/>
+      <text class="s-text-s" x="146" y="28">CONTROL PLANE</text>
+      <rect id="a-api" class="s-orange-soft" x="150" y="48" width="130" height="50" rx="8"/>
+      <text class="s-text-b" x="215" y="70" text-anchor="middle">API server</text><text class="s-text-s" x="215" y="88" text-anchor="middle">front door</text>
+      <rect id="a-etcd" class="s-purple" x="150" y="112" width="130" height="50" rx="8"/>
+      <text class="s-text-b" x="215" y="134" text-anchor="middle">etcd</text><text class="s-text-s" x="215" y="152" text-anchor="middle">cluster database</text>
+      <rect id="a-sched" class="s-blue" x="310" y="48" width="130" height="50" rx="8"/>
+      <text class="s-text-b" x="375" y="70" text-anchor="middle">Scheduler</text><text class="s-text-s" x="375" y="88" text-anchor="middle">picks a node</text>
+      <rect id="a-cm" class="s-blue" x="310" y="112" width="130" height="50" rx="8"/>
+      <text class="s-text-b" x="375" y="134" text-anchor="middle">Controller mgr</text><text class="s-text-s" x="375" y="152" text-anchor="middle">fixes drift</text>
+      <rect class="s-box" x="470" y="80" width="200" height="50" rx="8"/>
+      <text class="s-text-b" x="570" y="102" text-anchor="middle">Cloud controller</text><text class="s-text-s" x="570" y="120" text-anchor="middle">talks to the cloud (optional)</text>
+      <path class="s-line" d="M94 85 H148" marker-end="url(#arr2)"/>
+      <path class="s-line" d="M280 73 H308" marker-end="url(#arr2)"/>
+      <path class="s-line" d="M215 98 V110" marker-end="url(#arr2)"/>
+      <path class="s-line" d="M310 137 H282" marker-end="url(#arr2)"/>
+      <rect class="s-green" x="130" y="215" width="270" height="155" rx="10"/>
+      <text class="s-text-b" x="265" y="236" text-anchor="middle">Worker node 1</text>
+      <rect id="a-kubelet" class="s-box" x="144" y="248" width="116" height="40" rx="6"/><text class="s-text-b" x="202" y="273" text-anchor="middle">kubelet</text>
+      <rect id="a-proxy" class="s-box" x="270" y="248" width="116" height="40" rx="6"/><text class="s-text-b" x="328" y="273" text-anchor="middle">kube-proxy</text>
+      <rect class="s-box" x="144" y="298" width="116" height="60" rx="6"/><text class="s-text-s" x="202" y="318" text-anchor="middle">container runtime</text>
+      <rect id="a-pod" class="s-orange-soft" x="274" y="298" width="50" height="60" rx="6"/><text class="s-text" x="299" y="333" text-anchor="middle">Pod</text>
+      <rect class="s-orange-soft" x="334" y="298" width="50" height="60" rx="6"/><text class="s-text" x="359" y="333" text-anchor="middle">Pod</text>
+      <rect class="s-green" x="430" y="215" width="262" height="155" rx="10"/>
+      <text class="s-text-b" x="561" y="236" text-anchor="middle">Worker node 2</text>
+      <rect class="s-box" x="444" y="248" width="112" height="40" rx="6"/><text class="s-text-b" x="500" y="273" text-anchor="middle">kubelet</text>
+      <rect class="s-box" x="566" y="248" width="112" height="40" rx="6"/><text class="s-text-b" x="622" y="273" text-anchor="middle">kube-proxy</text>
+      <rect class="s-box" x="444" y="298" width="112" height="60" rx="6"/><text class="s-text-s" x="500" y="318" text-anchor="middle">container runtime</text>
+      <rect class="s-orange-soft" x="570" y="298" width="50" height="60" rx="6"/><text class="s-text" x="595" y="333" text-anchor="middle">Pod</text>
+      <path class="s-line-o" d="M215 178 V212 H202 V246" marker-end="url(#arr2)"/>
+    </svg>
+    <figcaption>A cluster: one control plane makes decisions, worker nodes run the Pods.</figcaption>
+  </figure>
+
+  <h2>Control plane components</h2>
+  <div class="table-wrap"><table>
+    <tr><th>Component</th><th>Job</th></tr>
+    <tr><td><strong>API server</strong></td><td>The heart of Kubernetes and the only part exposed to the outside world; the worker nodes stay internal. Every request (from you, from other components) goes through it, which is also where you would add things like single sign-on or other security checks. Every request (from you, from other components) goes through it. It checks who you are, validates the request, and reads or writes the cluster data. Nothing else talks to the database directly.</td></tr>
+    <tr><td><strong>etcd</strong></td><td>A key-value database that is the backing store of the entire cluster: every object is saved as a key-value pair. It is what you back up and restore from. Lose it without a backup and you lose the cluster's memory.</td></tr>
+    <tr><td><strong>Scheduler</strong></td><td>Watches for new Pods with no node and picks the best node, based on free CPU and memory and any rules you set.</td></tr>
+    <tr><td><strong>Controller manager</strong></td><td>Kubernetes has built-in controllers, such as the ReplicaSet controller: if your YAML says "2 Pods," it makes sure two are always running (<a href="05-deployments-replicasets.html">Lesson 5</a>). The controller manager is the program that keeps all these controllers running.</td></tr>
+    <tr><td><strong>Cloud controller manager (CCM)</strong></td><td>Only in cloud clusters (EKS, AKS, GKE). When you ask for a load balancer or storage, Kubernetes must turn that into the API call each cloud understands. Kubernetes can't contain logic for every cloud, so the CCM is open source: a brand-new cloud provider can add its own logic to it. On-premises clusters don't need it at all.</td></tr>
+  </table></div>
+
+  <h2>Worker node components</h2>
+  <div class="table-wrap"><table>
+    <tr><th>Component</th><th>Job</th></tr>
+    <tr><td><strong>kubelet</strong></td><td>The agent on every node. It takes the Pods assigned to its node, makes sure they keep running, and reports problems back to the API server so the control plane can act.</td></tr>
+    <tr><td><strong>kube-proxy</strong></td><td>Networking: gives Pods IP addresses and basic load balancing across replicas, via <code>iptables</code> rules on the node (details in <a href="06-services-intro.html">Lesson 6</a>).</td></tr>
+    <tr><td><strong>Container runtime</strong></td><td>The software that actually runs the containers. Any runtime that follows the Container Runtime Interface works: containerd, CRI-O, and others. (Some docs leave it off the diagram, but it is always required.)</td></tr>
+  </table></div>
+  <div class="callout"><span class="callout-title">Note</span>A <strong>Pod</strong> is the smallest thing Kubernetes runs: a wrapper around one or more containers. It gets its own lesson next-but-one: <a href="04-pods.html">Lesson 4: Pods</a>.</div>
+
+  <h2>Follow a request</h2>
+  <p>Say you run <code>kubectl apply -f app.yaml</code> asking for a new Pod. Step through what happens.</p>
+
+  <div class="demo" id="demo-flow">
+    <div class="demo-head">Try it: life of a request</div>
+    <div class="demo-body">
+      <p>Press <strong>Next</strong> and watch the highlighted component in the diagram above.</p>
+      <div class="row">
+        <button class="btn primary" id="fl-next">Next step</button>
+        <button class="btn" id="fl-reset">Restart</button>
+      </div>
+      <div class="output" id="fl-out">Press <b>Next step</b> to begin.</div>
+    </div>
+  </div>
+
+  <ol class="steps">
+    <li><strong>kubectl to API server.</strong> kubectl sends your YAML as an HTTPS request, with your credentials from the kubeconfig file.</li>
+    <li><strong>API server to etcd.</strong> After checking your identity and permissions, the API server stores the new Pod object in etcd. It has no node yet.</li>
+    <li><strong>Scheduler.</strong> It notices a Pod without a node, picks the best one, and records that choice through the API server.</li>
+    <li><strong>kubelet.</strong> The kubelet on the chosen node sees a Pod assigned to it and asks the container runtime to pull the image and start the container.</li>
+    <li><strong>Status back.</strong> The kubelet reports "Running" to the API server, which saves it in etcd. <code>kubectl get pods</code> now shows it.</li>
+  </ol>
+  <p>Afterwards the controller manager keeps watching. If the Pod disappears later and your desired state says it should exist, a controller asks for a new one and the cycle repeats. That loop is the heart of Kubernetes.</p>
+
+  <div class="callout interview"><span class="callout-title">Interview angle</span>"What are the components of Kubernetes?" Answer in two groups. <strong>Control plane</strong> (controls the actions): API server, scheduler, etcd, controller manager, cloud controller manager. <strong>Data plane / worker node</strong> (executes them): kubelet, kube-proxy, container runtime. Then explain each one's purpose, not just its name. Good practice: write these notes with a diagram of a Pod's creation and share it.</div>
+
+  <h2>kubectl: your remote control</h2>
+  <p><strong>kubectl</strong> is the command-line client for the API server. It reads a <strong>kubeconfig</strong> file (by default <code>~/.kube/config</code>) that says which cluster to talk to and as whom.</p>
+<pre><code>kubectl version --client       # check the install
+kubectl cluster-info           # where is the API server?
+kubectl get nodes              # list the machines in the cluster
+kubectl get pods -A            # Pods in all namespaces
+kubectl config get-contexts    # which clusters can I reach?</code></pre>
+  <div class="callout tip"><span class="callout-title">Tip</span>Even on a managed cluster, the control plane Pods live in the <code>kube-system</code> namespace. Run <code>kubectl get pods -n kube-system</code> to see components such as kube-proxy and CoreDNS (the cluster's DNS server) running.</div>
+  <div class="callout interview"><span class="callout-title">Interview angle</span>"What happens when you run <code>kubectl apply</code>?" Walk through API server, etcd, scheduler, kubelet, container runtime. Mention that only the API server talks to etcd.</div>
+
+  <h2>Check yourself</h2>
+  <div class="quiz" data-answer="2">
+    <div class="q">Which component decides which node a new Pod runs on?</div>
+    <div class="opts"><button>kubelet</button><button>etcd</button><button>Scheduler</button></div>
+    <div class="explain">The scheduler assigns unscheduled Pods to nodes. The kubelet then runs them.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">Where is the cluster's state (all objects and their settings) stored?</div>
+    <div class="opts"><button>etcd</button><button>kube-proxy</button><button>On each worker node's disk only</button></div>
+    <div class="explain">etcd is the cluster's database, and only the API server talks to it.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">Which component runs on every worker node and makes sure Pods are running as assigned?</div>
+    <div class="opts"><button>Controller manager</button><button>kubelet</button><button>API server</button></div>
+    <div class="explain">The kubelet is the node agent that starts Pods and reports their health.</div>
+  </div>
+
+  <section class="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li>A cluster = control plane (decides) + worker nodes (run containers).</li>
+      <li>Control plane: API server (front door), etcd (database), scheduler (placement), controller manager (reconcile loops), optional cloud controller.</li>
+      <li>Worker node: kubelet (agent), kube-proxy (networking rules), container runtime (runs containers).</li>
+      <li>Every action goes through the API server; only it talks to etcd.</li>
+      <li>kubectl is just a client that sends requests to the API server using your kubeconfig.</li>
+    </ul>
+  </section>
+</main>
+<script>
+(function () {
+  var STEPS = [
+    ["a-api", "kubectl sends the Pod request to the <b>API server</b>, which authenticates you and validates the YAML."],
+    ["a-etcd", "The API server saves the new Pod object in <b>etcd</b>. It exists now, but has no node."],
+    ["a-sched", "The <b>scheduler</b> sees an unassigned Pod and picks the best node for it."],
+    ["a-kubelet", "The <b>kubelet</b> on that node sees the assignment and asks the container runtime to pull the image and start the container."],
+    ["a-pod", "The <b>Pod</b> is running. The kubelet reports status to the API server, and <code>kubectl get pods</code> shows Running."],
+    ["a-cm", "The <b>controller manager</b> keeps watching. If the Pod vanishes while your desired state still wants it, it asks for a replacement."]
+  ];
+  var i = -1, out = document.getElementById("fl-out");
+  function clear() { document.querySelectorAll(".hl").forEach(function (e) { e.classList.remove("hl"); }); }
+  document.getElementById("fl-next").onclick = function () {
+    clear(); i = (i + 1) % STEPS.length;
+    var s = STEPS[i], el = document.getElementById(s[0]);
+    if (el) el.classList.add("hl");
+    out.className = "output";
+    out.innerHTML = "<b>Step " + (i + 1) + " of " + STEPS.length + ":</b> " + s[1];
+  };
+  document.getElementById("fl-reset").onclick = function () {
+    clear(); i = -1; out.className = "output"; out.innerHTML = "Press <b>Next step</b> to begin.";
+  };
+})();
+</script>
+</body>
+</html>
