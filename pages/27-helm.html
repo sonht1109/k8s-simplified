@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Helm: The Package Manager · Kubernetes Simplified</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/site.js"></script>
+</head>
+<body data-page="27">
+<main class="wrap">
+  <header class="page-head">
+    <h1>Helm: The Package Manager</h1>
+    <p class="lead">Helm installs, upgrades and removes whole applications on Kubernetes with one command. You'll learn charts, repositories, releases and values, then build and package a chart of your own.</p>
+  </header>
+
+  <h2>What is Helm?</h2>
+  <p><strong>Helm is the package manager for Kubernetes.</strong> If you know Ubuntu, the idea is the same as <code>apt</code>: instead of hunting for install steps, you run one command and the tool does everything.</p>
+  <div class="table-wrap"><table>
+    <tr><th>Linux (apt)</th><th>Kubernetes (Helm)</th></tr>
+    <tr><td>package</td><td><strong>chart</strong></td></tr>
+    <tr><td>repository (archive.ubuntu.com)</td><td><strong>repository</strong> (e.g. Bitnami)</td></tr>
+    <tr><td><code>apt install python3</code></td><td><code>helm install my-name repo/chart</code></td></tr>
+    <tr><td>upgrade / remove package</td><td><code>helm upgrade</code> / <code>helm uninstall</code></td></tr>
+  </table></div>
+
+  <h2>Why not just kubectl apply?</h2>
+  <p>You can install anything with <code>kubectl apply</code>, just like you can install anything on Linux with <code>curl</code> and shell scripts. The pain shows up at scale:</p>
+  <ul>
+    <li>A tool like Prometheus needs a namespace, a service account, config maps, a Deployment or StatefulSet, Services, and they must be created in the right order.</li>
+    <li>Team A wants version 2.12 and team B wants 2.13. UAT needs 2 replicas, production needs 3. You'd keep copying and editing YAML files and scripts.</li>
+    <li>Those scripts must be tested and kept current as the software changes.</li>
+  </ul>
+  <p>Helm bundles all the YAML into one <strong>chart</strong>, lets you change settings from outside, and tracks what it installed so it can upgrade or remove it cleanly.</p>
+
+  <h2>Four words to know</h2>
+  <div class="grid-2">
+    <div class="card"><h3>Chart</h3><p>A package: all the Kubernetes YAML for an app, plus default settings.</p></div>
+    <div class="card"><h3>Repository</h3><p>A place that stores and serves charts. <code>helm repo add</code> registers one.</p></div>
+    <div class="card"><h3>Release</h3><p>One installed copy of a chart in a cluster, with a name you choose. Install the same chart twice and you get two releases.</p></div>
+    <div class="card"><h3>Values</h3><p>The settings you can change (replicas, image tag, resources) without editing the chart.</p></div>
+  </div>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 680 200" role="img" aria-label="A chart from a repository is combined with values by Helm to produce Kubernetes manifests, which become a release in the cluster.">
+      <defs><marker id="arr27" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" style="fill:var(--text-2)"/></marker></defs>
+      <rect class="s-blue" x="10" y="20" width="130" height="60" rx="8"/>
+      <text class="s-text-b" x="75" y="55" text-anchor="middle">Chart</text>
+      <rect class="s-orange-soft" x="10" y="120" width="130" height="60" rx="8"/>
+      <text class="s-text-b" x="75" y="155" text-anchor="middle">values.yaml</text>
+      <rect class="s-ink" x="215" y="70" width="110" height="60" rx="8"/>
+      <text class="s-text-w" x="270" y="105" text-anchor="middle">helm</text>
+      <rect class="s-box2" x="400" y="70" width="120" height="60" rx="8"/>
+      <text class="s-text-b" x="460" y="97" text-anchor="middle">Final YAML</text>
+      <text class="s-text-s" x="460" y="115" text-anchor="middle">rendered</text>
+      <rect class="s-green" x="580" y="70" width="90" height="60" rx="8"/>
+      <text class="s-text-b" x="625" y="97" text-anchor="middle">Release</text>
+      <text class="s-text-s" x="625" y="115" text-anchor="middle">in cluster</text>
+      <path class="s-line" d="M140 50 L213 85" marker-end="url(#arr27)"/>
+      <path class="s-line" d="M140 150 L213 115" marker-end="url(#arr27)"/>
+      <path class="s-line" d="M325 100 H398" marker-end="url(#arr27)"/>
+      <path class="s-line" d="M520 100 H578" marker-end="url(#arr27)"/>
+    </svg>
+    <figcaption>Helm fills the chart's templates with your values, then applies the result.</figcaption>
+  </figure>
+
+  <h2>Install Helm</h2>
+  <p>Helm is a command-line tool on your laptop (<code>brew install helm</code> on macOS, or the installer for your OS from the Helm docs). <strong>Nothing is installed in the cluster</strong>; Helm 2 needed a server part called Tiller, Helm 3 does not. Like <code>kubectl</code>, Helm talks to whichever cluster is the <em>current context</em> in your kubeconfig.</p>
+<pre><code>helm version
+kubectl config current-context</code></pre>
+
+  <h2>Installing third-party apps</h2>
+  <p>Two steps: add the repository once, then install a chart from it.</p>
+<pre><code>helm repo add bitnami https://charts.bitnami.com/bitnami
+helm repo update
+helm search repo bitnami | grep -i nginx
+
+helm install nginx-v1 bitnami/nginx
+helm list
+kubectl get pods</code></pre>
+  <p>In <code>helm install nginx-v1 bitnami/nginx</code>, <code>nginx-v1</code> is the <strong>release name</strong> and <code>bitnami/nginx</code> is <code>repo/chart</code>. The release name is required; it lets you install many copies and later upgrade or remove the right one.</p>
+  <p>Not in Bitnami? Search the project's own docs. Most tools publish their own repo (for example, the AWS Load Balancer Controller documents its <code>eks</code> chart repo). Add it the same way.</p>
+  <div class="callout note"><span class="callout-title">Note</span>Helm is used to install tools like Prometheus and Grafana too. How they work is in <a href="14-monitoring-prometheus-grafana.html">Lesson 14</a>.</div>
+
+  <h2>Values: customising an install</h2>
+  <p>Every chart ships default settings in <code>values.yaml</code>. See what you can change, then override at install time:</p>
+<pre><code>helm show values bitnami/nginx
+helm install web bitnami/nginx --set replicaCount=3
+helm install web2 bitnami/nginx -f my-values.yaml</code></pre>
+  <p><code>--set</code> is good for one or two values; <code>-f file.yaml</code> is better for a set you keep in Git (one file per environment).</p>
+
+  <h2>Upgrade, history, rollback, uninstall</h2>
+<pre><code>helm upgrade web bitnami/nginx --set replicaCount=5
+helm history web
+helm rollback web 1
+helm uninstall web</code></pre>
+  <ul>
+    <li><code>upgrade</code> changes an existing release (new chart version or new values).</li>
+    <li>Each change is a numbered <strong>revision</strong>, so <code>rollback</code> returns to an earlier one.</li>
+    <li><code>uninstall</code> takes the release name and removes everything the chart created.</li>
+  </ul>
+
+  <h2>Build your own chart</h2>
+  <p>You can package your own microservices too. Say you work on a shop with a <code>payments</code> and a <code>shipping</code> service. Let Helm create the skeleton:</p>
+<pre><code>helm create payments</code></pre>
+  <p>Three things matter in the folder:</p>
+<pre><code>payments/
+  Chart.yaml      # metadata: name, chart version, app version
+  values.yaml     # default settings
+  templates/      # your YAML files, with placeholders
+  charts/         # dependencies (ignore for now)</code></pre>
+  <ul>
+    <li><strong>templates/</strong>: put your Deployment, Service, ConfigMap etc. here. Replace fixed values with placeholders.</li>
+    <li><strong>values.yaml</strong>: the values those placeholders read.</li>
+    <li><strong>Chart.yaml</strong>: who owns it, chart version, app version.</li>
+  </ul>
+  <p>A trimmed <code>templates/deployment.yaml</code>:</p>
+<pre><code>apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-payments
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-payments
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-payments
+    spec:
+      containers:
+      - name: payments
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"</code></pre>
+<pre><code># values.yaml
+replicaCount: 1
+image:
+  repository: busybox
+  tag: latest</code></pre>
+  <p>The Deployment and its fields are covered in <a href="05-deployments-replicasets.html">Lesson 5</a>. Here, the only new thing is the <code>{{ }}</code> placeholders.</p>
+
+  <div class="demo" id="demo-helm">
+    <div class="demo-head">Try it: values fill the template</div>
+    <div class="demo-body">
+      <p>Change the values and see the YAML Helm would produce. Think of it as "UAT vs production".</p>
+      <div class="row">
+        <label>Release name <input type="text" id="h-rel" value="shop" maxlength="20"></label>
+        <label>Replicas <select id="h-rep"><option>1</option><option selected>2</option><option>3</option></select></label>
+        <label>Image tag <input type="text" id="h-tag" value="1.0" maxlength="12"></label>
+      </div>
+      <div class="row">
+        <button class="btn" id="h-uat">UAT preset</button>
+        <button class="btn" id="h-prod">Prod preset</button>
+      </div>
+      <div class="output ok" id="h-out"></div>
+    </div>
+  </div>
+
+  <h3>Package and publish</h3>
+<pre><code>helm package payments        # creates payments-0.1.0.tgz
+helm package shipping
+helm repo index .            # creates index.yaml listing both charts</code></pre>
+  <p>Upload the <code>.tgz</code> files and <code>index.yaml</code> to any web location (an artifact server like Nexus or Artifactory, or GitHub Pages). Anyone can then run <code>helm repo add best-commerce &lt;url&gt;</code> and <code>helm install p1 best-commerce/payments</code>, exactly like Bitnami charts.</p>
+
+  <h2>Helm vs Kustomize</h2>
+  <p>Both solve "same app, different settings". They take different approaches.</p>
+  <div class="table-wrap"><table>
+    <tr><th></th><th>Helm</th><th><a href="25-kustomize.html">Kustomize</a></th></tr>
+    <tr><td>Idea</td><td>Templates + values, packaged as charts</td><td>Plain YAML + patches/overlays</td></tr>
+    <tr><td>Sharing apps</td><td>Strong: repositories, versions</td><td>Not a package format</td></tr>
+    <tr><td>Lifecycle</td><td>Releases, upgrade, rollback</td><td>Just generates YAML</td></tr>
+    <tr><td>Learning curve</td><td>Template syntax</td><td>Gentler</td></tr>
+  </table></div>
+  <p>Many teams use Helm to install third-party tools and Kustomize (or Helm values files) for their own apps.</p>
+
+  <div class="callout interview"><span class="callout-title">Interview angle</span>"What problem does Helm solve?" Packaging, versioning and configuring many YAML files as one unit, with upgrade and rollback. Be ready to name chart, release, repository and values.</div>
+
+  <h2>Check yourself</h2>
+  <div class="quiz" data-answer="0">
+    <div class="q">What is a Helm <em>release</em>?</div>
+    <div class="opts"><button>One installed instance of a chart in a cluster, with its own name</button><button>A new version number of a chart</button><button>A folder of YAML files</button></div>
+    <div class="explain">A chart is the package; a release is a named install of it. Install the same chart twice and you have two releases.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">You want 3 replicas in production and 2 in UAT, using the same chart. What do you change?</div>
+    <div class="opts"><button>Copy the chart and edit the templates</button><button>Write a different shell script</button><button>Pass different values (<code>--set</code> or <code>-f</code>)</button></div>
+    <div class="explain">Templates stay the same; values are what change per environment.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">How does Helm 3 know which cluster to install into?</div>
+    <div class="opts"><button>Through a Tiller pod in the cluster</button><button>Through the current context in your kubeconfig</button><button>It asks every time</button></div>
+    <div class="explain">Like kubectl, Helm uses your kubeconfig. Helm 3 has no server component.</div>
+  </div>
+
+  <section class="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li>Helm is a package manager: chart = package, repository = store, release = installed copy, values = settings.</li>
+      <li>Install flow: <code>helm repo add</code>, <code>helm search repo</code>, <code>helm install NAME repo/chart</code>.</li>
+      <li><code>helm upgrade</code>, <code>helm history</code>, <code>helm rollback</code>, <code>helm uninstall</code> manage the release lifecycle.</li>
+      <li>Use <code>helm show values</code> to see options; override with <code>--set</code> or <code>-f</code>.</li>
+      <li>Your own chart = <code>Chart.yaml</code> + <code>values.yaml</code> + <code>templates/</code>; publish with <code>helm package</code> and <code>helm repo index</code>.</li>
+      <li>Helm packages and shares; Kustomize patches plain YAML. They can be combined.</li>
+    </ul>
+  </section>
+</main>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var rel = $("h-rel"), rep = $("h-rep"), tag = $("h-tag"), out = $("h-out");
+  function safe(s) { return s.replace(/[^a-zA-Z0-9.\-_]/g, ""); }
+  function render() {
+    var r = safe(rel.value) || "release", t = safe(tag.value) || "latest";
+    var y = "# helm template " + r + " ./payments\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: " + r + "-payments\nspec:\n  replicas: " + rep.value +
+      "\n  selector:\n    matchLabels:\n      app: " + r + "-payments\n  template:\n    metadata:\n      labels:\n        app: " + r + "-payments\n    spec:\n      containers:\n      - name: payments\n        image: \"busybox:" + t + "\"";
+    out.innerHTML = "<pre style='margin:0'><code></code></pre>";
+    out.getElementsByTagName("code")[0].textContent = y;
+  }
+  [rel, tag].forEach(function (e) { e.addEventListener("input", render); });
+  rep.addEventListener("change", render);
+  $("h-uat").addEventListener("click", function () { rep.value = "2"; rel.value = "uat"; render(); });
+  $("h-prod").addEventListener("click", function () { rep.value = "3"; rel.value = "prod"; render(); });
+  render();
+})();
+</script>
+</body>
+</html>
