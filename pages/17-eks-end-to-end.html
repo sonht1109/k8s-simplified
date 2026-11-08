@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Project: End-to-End App on EKS · Kubernetes Simplified</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/site.js"></script>
+<style>
+  .sim-box { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin: 10px 0; background: var(--surface-2); }
+  .sim-box label { display: flex; gap: 8px; align-items: flex-start; margin: 4px 0; }
+  .trace { list-style: none; padding: 0; margin: 0; }
+  .trace li { margin: 3px 0; }
+</style>
+</head>
+<body data-page="17">
+<main class="wrap">
+  <header class="page-head">
+    <h1>Project: End-to-End App on EKS</h1>
+    <p class="lead">Build something you can show on a resume: create an Amazon EKS cluster, deploy the 2048 game, and expose it to the internet through an Application Load Balancer that Kubernetes creates for you. The focus is on the build steps and why each one is needed.</p>
+  </header>
+
+  <div class="xref-box"><div>This project uses ideas taught elsewhere: <a href="05-deployments-replicasets.html">Deployments</a>, <a href="06-services-intro.html">Services</a>, <a href="09-ingress-tls.html">Ingress and ingress controllers</a>, and <a href="27-helm.html">Helm</a>. Here we only wire them together on AWS.</div></div>
+
+  <h2>What is EKS?</h2>
+  <p><strong>EKS (Elastic Kubernetes Service)</strong> is AWS's managed Kubernetes. If you build a cluster yourself (kubeadm, <a href="03-managing-clusters-kops.html">kOps</a>), you own everything: a broken etcd, an expired certificate, a slow API server. With EKS:</p>
+  <ul>
+    <li><strong>AWS runs the control plane</strong> (API server, etcd, scheduler, controllers) across several Availability Zones, with an SLA. You never see those machines.</li>
+    <li><strong>You choose the worker nodes</strong> (the data plane): your own EC2 instances (in node groups with autoscaling), or <strong>Fargate</strong>, AWS's serverless compute for containers, where you do not manage servers at all.</li>
+  </ul>
+  <p>The architecture of control plane and nodes is in <a href="02-architecture.html">Lesson 2</a>. Note that "managed" does not mean "self-upgrading". See <a href="16-cluster-upgrade.html">Lesson 16</a>.</p>
+
+  <h2>The plan</h2>
+  <p>A Pod is only reachable inside the cluster. To reach it from the internet, you need a path. In a VPC, apps live in <em>private</em> subnets and the load balancer lives in <em>public</em> subnets.</p>
+  <figure class="diagram">
+    <svg viewBox="0 0 700 250" role="img" aria-label="A user reaches an Application Load Balancer in a public subnet, which forwards to Pods in a private subnet. The AWS Load Balancer Controller watches the Ingress and creates the ALB.">
+      <defs><marker id="arr17" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" style="fill:var(--text-2)"/></marker></defs>
+      <rect class="s-box2" x="8" y="95" width="80" height="50" rx="8"/>
+      <text class="s-text-b" x="48" y="125" text-anchor="middle">User</text>
+      <rect class="s-dash" x="110" y="8" width="582" height="234" rx="12"/>
+      <text class="s-text-s" x="124" y="28">VPC created by eksctl</text>
+      <rect class="s-blue" x="130" y="45" width="150" height="180" rx="10"/>
+      <text class="s-text-b" x="205" y="68" text-anchor="middle">Public subnet</text>
+      <rect class="s-orange" x="150" y="95" width="110" height="50" rx="8"/>
+      <text class="s-text-ink" x="205" y="125" text-anchor="middle">ALB</text>
+      <rect class="s-green" x="320" y="45" width="360" height="180" rx="10"/>
+      <text class="s-text-b" x="500" y="68" text-anchor="middle">Private subnet (Fargate)</text>
+      <rect class="s-box" x="340" y="85" width="100" height="44" rx="8"/>
+      <text class="s-text-b" x="390" y="112" text-anchor="middle">Service</text>
+      <rect class="s-orange-soft" x="470" y="85" width="190" height="44" rx="8"/>
+      <text class="s-text-b" x="565" y="112" text-anchor="middle">2048 Pods x5</text>
+      <rect class="s-purple" x="340" y="160" width="320" height="46" rx="8"/>
+      <text class="s-text-b" x="500" y="180" text-anchor="middle">AWS Load Balancer Controller</text>
+      <text class="s-text-s" x="500" y="197" text-anchor="middle">watches Ingress, creates the ALB</text>
+      <path class="s-line-o" d="M88 120 H148" marker-end="url(#arr17)"/>
+      <path class="s-line-o" d="M260 120 H338" marker-end="url(#arr17)"/>
+      <path class="s-line-o" d="M440 107 H468" marker-end="url(#arr17)"/>
+      <path class="s-line" d="M420 160 V135 M420 160 L260 140" marker-end="url(#arr17)" style="stroke-dasharray:5 4"/>
+    </svg>
+    <figcaption>Requests flow through the ALB to the Service and Pods. The controller (dashed) creates and configures the ALB from your Ingress.</figcaption>
+  </figure>
+
+  <h2>Step 0: Install the tools</h2>
+  <p>On your laptop you need <code>kubectl</code> (talks to the cluster), <code>eksctl</code> (creates and manages EKS clusters), the <code>aws</code> CLI (configured with <code>aws configure</code>) and <code>helm</code>. Use an IAM user with enough permissions in a practice account, and delete everything when done to avoid charges.</p>
+
+  <h2>Step 1: Create the cluster</h2>
+<pre><code>eksctl create cluster --name demo-cluster --region us-east-1 --fargate</code></pre>
+  <p>This takes 10-20 minutes. Behind the scenes <code>eksctl</code> creates a VPC with public and private subnets, the IAM roles, the managed control plane and a default Fargate profile. Doing the same by clicking in the console needs many more decisions, which is why teams prefer <code>eksctl</code> (or Terraform).</p>
+  <p>Then point <code>kubectl</code> at the new cluster:</p>
+<pre><code>aws eks update-kubeconfig --name demo-cluster --region us-east-1
+kubectl get nodes</code></pre>
+  <div class="callout tip"><span class="callout-title">Handy</span>The EKS console has a <em>Resources</em> tab where you can browse Pods, DaemonSets and ServiceAccounts without typing <code>kubectl</code>.</div>
+
+  <h2>Step 2: Create a Fargate profile for your namespace</h2>
+  <p>On Fargate, a Pod only runs if its <strong>namespace matches a Fargate profile</strong>. The default profile covers only <code>default</code> and <code>kube-system</code>. Our app will live in <code>game-2048</code>, so add a profile:</p>
+<pre><code>eksctl create fargateprofile \
+  --cluster demo-cluster --region us-east-1 \
+  --name alb-sample-app --namespace game-2048</code></pre>
+  <div class="callout warn"><span class="callout-title">Watch out</span>If you forget this, your Pods sit in <code>Pending</code> forever. With EC2 node groups you do not need Fargate profiles.</div>
+
+  <h2>Step 3: Deploy the app, Service and Ingress</h2>
+  <p>One manifest holds four objects: a Namespace, a Deployment (5 replicas of the 2048 game image), a Service, and an Ingress. The key parts:</p>
+<pre><code>apiVersion: v1
+kind: Service
+metadata:
+  namespace: game-2048
+  name: service-2048
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: app-2048   # must match the Pod labels
+  ports:
+    - port: 80
+      targetPort: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  namespace: game-2048
+  name: ingress-2048
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+spec:
+  ingressClassName: alb
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: service-2048
+                port:
+                  number: 80</code></pre>
+  <p>Apply it and look around:</p>
+<pre><code>kubectl apply -f 2048_full.yaml
+kubectl get pods -n game-2048
+kubectl get svc -n game-2048
+kubectl get ingress -n game-2048</code></pre>
+  <p>The Pods run, but the Ingress has <strong>no ADDRESS</strong>. An Ingress is only a set of rules. Nothing in the cluster is reading it yet. Selectors and Services are explained in <a href="06-services-intro.html">Lesson 6</a>; the Ingress idea in <a href="09-ingress-tls.html">Lesson 9</a>.</p>
+  <ul>
+    <li><code>scheme: internet-facing</code> puts the ALB in public subnets with a public address.</li>
+    <li><code>target-type: ip</code> sends traffic straight to Pod IPs. It is required on Fargate.</li>
+    <li><code>ingressClassName: alb</code> tells the AWS controller that this Ingress is its job.</li>
+  </ul>
+
+  <h2>Step 4: Install the AWS Load Balancer Controller</h2>
+  <p>The controller is itself a Pod. It must call AWS APIs to create load balancers, so it needs AWS permissions. EKS does this with <strong>IAM roles for service accounts (IRSA)</strong>: a Kubernetes ServiceAccount is linked to an IAM role through an <strong>OIDC identity provider</strong>.</p>
+  <ol class="steps">
+    <li><strong>Associate the IAM OIDC provider</strong> with the cluster:
+<pre><code>eksctl utils associate-iam-oidc-provider \
+  --cluster demo-cluster --region us-east-1 --approve</code></pre></li>
+    <li><strong>Create the IAM policy</strong> from the JSON published in the controller's documentation:
+<pre><code>curl -O https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/main/docs/install/iam_policy.json
+aws iam create-policy \
+  --policy-name AWSLoadBalancerControllerIAMPolicy \
+  --policy-document file://iam_policy.json</code></pre></li>
+    <li><strong>Create a ServiceAccount bound to a role</strong> that carries the policy (replace <code>&lt;ACCOUNT_ID&gt;</code>):
+<pre><code>eksctl create iamserviceaccount \
+  --cluster demo-cluster --region us-east-1 \
+  --namespace kube-system --name aws-load-balancer-controller \
+  --role-name AmazonEKSLoadBalancerControllerRole \
+  --attach-policy-arn arn:aws:iam::&lt;ACCOUNT_ID&gt;:policy/AWSLoadBalancerControllerIAMPolicy \
+  --approve</code></pre></li>
+    <li><strong>Install the controller with Helm</strong>, reusing that ServiceAccount (replace the VPC id; find it on the cluster's Networking tab):
+<pre><code>helm repo add eks https://aws.github.io/eks-charts
+helm repo update eks
+helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
+  -n kube-system \
+  --set clusterName=demo-cluster \
+  --set serviceAccount.create=false \
+  --set serviceAccount.name=aws-load-balancer-controller \
+  --set region=us-east-1 \
+  --set vpcId=&lt;VPC_ID&gt;</code></pre></li>
+    <li><strong>Wait until it is ready</strong> (2 of 2 replicas, one per Availability Zone):
+<pre><code>kubectl get deployment -n kube-system aws-load-balancer-controller</code></pre></li>
+  </ol>
+
+  <h2>Step 5: Watch the magic happen</h2>
+  <p>As soon as the controller runs, it sees the Ingress and creates an ALB with listeners, target groups and security groups. In a couple of minutes:</p>
+<pre><code>kubectl get ingress -n game-2048     # ADDRESS now shows the ALB DNS name</code></pre>
+  <p>Open that address in a browser (plain <code>http://</code>) once the load balancer shows <em>Active</em> in the EC2 console. You should see the 2048 game. Notice the pattern that real teams use: a DevOps engineer sets up the controller <strong>once</strong>, and every microservice team only writes Deployment, Service and Ingress YAML.</p>
+
+  <div class="demo" id="demo-eks">
+    <div class="demo-head">Try it: why is my Ingress address empty?</div>
+    <div class="demo-body">
+      <p>Tick what you have done, then see what a visitor gets.</p>
+      <div class="sim-box">
+        <label><input type="checkbox" id="e-fp" checked> Fargate profile for <code>game-2048</code></label>
+        <label><input type="checkbox" id="e-app" checked> Deployment, Service and Ingress applied</label>
+        <label><input type="checkbox" id="e-oidc"> OIDC provider, IAM policy and ServiceAccount created</label>
+        <label><input type="checkbox" id="e-ctl"> Load Balancer Controller installed with Helm</label>
+      </div>
+      <div class="row"><button class="btn primary" id="e-go">Check the result</button></div>
+      <div class="output" id="e-out">Press the button.</div>
+    </div>
+  </div>
+
+  <h2>Troubleshooting you may meet</h2>
+  <ul>
+    <li><strong>Controller Pods stuck at 0/2:</strong> run <code>kubectl describe</code> on the Deployment or ReplicaSet. A message like "error looking up service account" means the ServiceAccount was not created (often a leftover CloudFormation stack from a previous try; delete the stack and recreate).</li>
+    <li><strong>"policy already exists":</strong> an earlier run left it behind. Reuse or delete it.</li>
+    <li><strong>Pods <code>Pending</code>:</strong> missing Fargate profile for the namespace.</li>
+    <li><strong>ALB created but the page does not load:</strong> wait until its state is <em>Active</em>, and check you used <code>http://</code>.</li>
+  </ul>
+  <div class="callout warn"><span class="callout-title">Clean up</span>The cluster, ALB and Fargate Pods all cost money. Delete the Ingress first (so the controller removes the ALB), then run <code>eksctl delete cluster --name demo-cluster --region us-east-1</code>.</div>
+
+  <h2>Check yourself</h2>
+  <div class="quiz" data-answer="2">
+    <div class="q">You applied an Ingress with <code>ingressClassName: alb</code> but ADDRESS stays empty. Most likely cause?</div>
+    <div class="opts"><button>The Deployment has too many replicas</button><button>The Service type must be LoadBalancer</button><button>The AWS Load Balancer Controller is not installed or not running</button></div>
+    <div class="explain">An Ingress is just rules. A controller must watch it and create the load balancer.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">Why does the controller need an OIDC provider and an IAM-linked ServiceAccount?</div>
+    <div class="opts"><button>So users can log in to the game</button><button>So a Pod can get AWS permissions to create load balancers</button><button>So Fargate can pull images</button></div>
+    <div class="explain">IRSA lets a Kubernetes ServiceAccount assume an IAM role, giving the controller Pod permission to call AWS APIs.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">What does "EKS is a managed control plane" mean?</div>
+    <div class="opts"><button>AWS runs and keeps available the API server, etcd and scheduler; you pick the worker nodes</button><button>AWS runs your worker nodes and upgrades them automatically</button><button>AWS writes your manifests</button></div>
+    <div class="explain">You still choose and look after the data plane (or use Fargate), and you still trigger upgrades.</div>
+  </div>
+
+  <section class="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li>EKS = AWS-managed control plane; workers are EC2 node groups or serverless Fargate.</li>
+      <li><code>eksctl create cluster</code> builds the VPC, subnets, roles and cluster in one command.</li>
+      <li>On Fargate, every namespace needs a Fargate profile or Pods stay Pending.</li>
+      <li>An Ingress needs an ingress controller; on AWS that is the Load Balancer Controller, which creates an ALB.</li>
+      <li>The controller gets AWS permissions via an OIDC provider, an IAM policy and an IAM-linked ServiceAccount.</li>
+      <li>Set up the controller once; each app team then ships only Deployment, Service and Ingress.</li>
+    </ul>
+  </section>
+</main>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  function li(ok, t) { return "<li>" + (ok ? "&#10004; " : "&#10008; ") + t + "</li>"; }
+  $("e-go").addEventListener("click", function () {
+    var fp = $("e-fp").checked, app = $("e-app").checked, iam = $("e-oidc").checked, ctl = $("e-ctl").checked;
+    var s = [], good = false, msg = "";
+    if (!app) { s.push(li(false, "Nothing deployed yet: there is no app to reach.")); msg = "No application exists."; }
+    else {
+      s.push(li(fp, fp ? "Pods can be scheduled on Fargate." : "No Fargate profile for the namespace: Pods stay Pending."));
+      if (!fp) msg = "Pods are Pending, so even a load balancer would have nothing to send traffic to.";
+      s.push(li(iam, iam ? "Controller has AWS permissions (IRSA)." : "No IAM role for the controller ServiceAccount: it cannot call AWS."));
+      s.push(li(ctl, ctl ? "Controller is installed and watching Ingresses." : "No controller: nobody reads the Ingress, so ADDRESS stays empty."));
+      if (fp && iam && ctl) { good = true; msg = "The controller creates an ALB. After it becomes Active, the game loads in the browser."; }
+      else if (fp && ctl && !iam) msg = "The controller Pod fails with permission or service account errors, so no ALB is created.";
+      else if (fp && !ctl) msg = "The Ingress has no ADDRESS.";
+    }
+    var out = $("e-out");
+    out.className = "output " + (good ? "ok" : "bad");
+    out.innerHTML = '<ul class="trace">' + s.join("") + "</ul><p style=\"margin:8px 0 0\"><b>" + msg + "</b></p>";
+  });
+})();
+</script>
+</body>
+</html>
