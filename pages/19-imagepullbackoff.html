@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Troubleshooting: ImagePullBackOff · Kubernetes Simplified</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/site.js"></script>
+<style>
+  .msg { font: 13px/1.5 var(--mono); }
+  .out-list { list-style: none; padding: 0; margin: 6px 0 0; }
+</style>
+</head>
+<body data-page="19">
+<main class="wrap">
+  <header class="page-head">
+    <h1>Troubleshooting: ImagePullBackOff</h1>
+    <p class="lead">One of the first errors every Kubernetes beginner meets: the Pod never starts because its container image cannot be downloaded. You will learn what the name means, the three common causes, how to tell them apart with <code>kubectl describe</code>, and how to fix each.</p>
+  </header>
+
+  <div class="xref-box"><div>Pods and their YAML are explained in <a href="04-pods.html">Lesson 4</a>. Secrets (used below for registry logins) are covered in <a href="13-configmaps-secrets-project.html">Lesson 13</a>.</div></div>
+
+  <h2>What the name means</h2>
+  <p>Before a Pod can run, the <strong>kubelet</strong> (the agent on the node) must pull the container image from a <strong>registry</strong> such as Docker Hub, Amazon ECR or Azure ACR. If the pull fails you see two statuses, one after the other:</p>
+  <ul>
+    <li><strong><code>ErrImagePull</code></strong>: the first failed attempt.</li>
+    <li><strong><code>ImagePullBackOff</code></strong>: Kubernetes is now <em>waiting</em> before trying again. The wait grows each time (roughly 5s, 10s, 20s, 40s ... up to a cap of 5 minutes). This growing delay is the "back-off".</li>
+  </ul>
+  <p>The wait exists because the failure may be temporary, like a network blip. Kubernetes keeps trying, but politely. It affects any Pod, whether created directly or by a Deployment, StatefulSet, DaemonSet or ReplicaSet.</p>
+  <figure class="diagram">
+    <svg viewBox="0 0 700 150" role="img" aria-label="Pod goes ContainerCreating, then ErrImagePull, then ImagePullBackOff, which retries with longer waits.">
+      <defs><marker id="arr19" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" style="fill:var(--text-2)"/></marker></defs>
+      <rect class="s-blue" x="10" y="40" width="170" height="50" rx="8"/>
+      <text class="s-text-b" x="95" y="70" text-anchor="middle">ContainerCreating</text>
+      <rect class="s-orange-soft" x="260" y="40" width="150" height="50" rx="8"/>
+      <text class="s-text-b" x="335" y="70" text-anchor="middle">ErrImagePull</text>
+      <rect class="s-red" x="500" y="40" width="190" height="50" rx="8"/>
+      <text class="s-text-b" x="595" y="70" text-anchor="middle">ImagePullBackOff</text>
+      <path class="s-line" d="M180 65 H258" marker-end="url(#arr19)"/>
+      <path class="s-line" d="M410 65 H498" marker-end="url(#arr19)"/>
+      <path class="s-line" d="M595 90 V125 H335 V92" marker-end="url(#arr19)"/>
+      <text class="s-text-s" x="465" y="118" text-anchor="middle">wait longer, retry</text>
+    </svg>
+    <figcaption>Each failed pull moves the Pod around this loop, with a longer pause each time.</figcaption>
+  </figure>
+
+  <h2>Cause 1: wrong image name or tag</h2>
+  <p>The most common cause is a typo, or an image or tag that does not exist (or was deleted). An image reference has the shape <code>registry/repository:tag</code>. With no registry, Docker Hub is assumed.</p>
+<pre><code>containers:
+  - name: nginx
+    image: nginy:1.14.2      # typo: there is no "nginy" repository</code></pre>
+  <p>Same problem for <code>myapp:1.1.1</code> when that tag was removed from the registry. For a registry other than Docker Hub you must include its address, for example <code>123456789012.dkr.ecr.us-east-1.amazonaws.com/myapp:v1</code>.</p>
+  <p><strong>Fix:</strong> correct the image in the manifest and re-apply. A Deployment creates fresh Pods:</p>
+<pre><code>kubectl apply -f nginx-deploy.yaml
+# or fix it directly:
+kubectl set image deployment/nginx-deployment nginx=nginx:1.14.2</code></pre>
+
+  <h2>Cause 2: private image, no credentials</h2>
+  <p>The image exists but the repository is <strong>private</strong>. Without a login, the registry refuses the pull ("pull access denied" or "authorization failed"). Kubernetes needs the credentials, stored in a Secret of type <code>docker-registry</code> and referenced from the Pod as an <strong>imagePullSecret</strong>.</p>
+  <ol class="steps">
+    <li><strong>Create the Secret</strong> (the name <code>regcred</code> is your choice):
+<pre><code>kubectl create secret docker-registry regcred \
+  --docker-server=https://index.docker.io/v1/ \
+  --docker-username=&lt;your-username&gt; \
+  --docker-password=&lt;your-password-or-token&gt; \
+  --docker-email=&lt;your-email&gt;</code></pre>
+    Check it with <code>kubectl get secrets</code>. The type shows as <code>kubernetes.io/dockerconfigjson</code>.</li>
+    <li><strong>Reference it</strong> in the Pod spec, in the same namespace:
+<pre><code>spec:
+  imagePullSecrets:
+    - name: regcred
+  containers:
+    - name: nginx
+      image: myuser/nginx-image-demo:v1</code></pre></li>
+    <li><strong>Apply</strong> and watch: <code>kubectl apply -f nginx-deploy.yaml</code> then <code>kubectl get pods -w</code>.</li>
+  </ol>
+  <div class="callout warn"><span class="callout-title">Watch out</span>Two classic slips even after adding the Secret: using the image name <em>without</em> your username prefix (<code>nginx-image-demo</code> instead of <code>myuser/nginx-image-demo</code>), and a Secret in a different namespace from the Pod. Also a typo in the username or password makes the Secret useless.</div>
+  <p><strong>Other registries:</strong> the same command works. Only the values change. For <strong>Amazon ECR</strong>:</p>
+<pre><code>kubectl create secret docker-registry ecr-cred \
+  --docker-server=&lt;ACCOUNT_ID&gt;.dkr.ecr.&lt;REGION&gt;.amazonaws.com \
+  --docker-username=AWS \
+  --docker-password="$(aws ecr get-login-password --region &lt;REGION&gt;)"</code></pre>
+  <p>For Azure ACR or others, look up the registry's docs for the server name and credentials. ECR tokens expire after 12 hours, so teams usually refresh them automatically, or on EKS give the nodes an IAM role that can read ECR.</p>
+
+  <h2>Cause 3: network or registry problems</h2>
+  <p>The name is right and the credentials are fine, but the node cannot reach the registry: no internet or NAT route from a private subnet, a firewall or proxy, DNS failure, or the registry itself is down or rate-limiting you. These often clear up on their own, which is why Kubernetes keeps retrying. If not, test from the node itself (for example <code>curl</code> the registry or try <code>docker pull</code>/<code>crictl pull</code>) and fix routing or DNS.</p>
+
+  <h2>The debug flow</h2>
+  <ol class="steps">
+    <li><code>kubectl get pods</code>: confirm the status is <code>ErrImagePull</code> or <code>ImagePullBackOff</code>.</li>
+    <li><code>kubectl describe pod &lt;pod-name&gt;</code>: scroll to the <strong>Events</strong> section at the bottom. This is where the real reason is written.</li>
+    <li>Read the message and match it to a cause (table and demo below).</li>
+    <li>Fix, re-apply, and watch with <code>kubectl get pods -w</code> (the <code>-w</code> flag keeps updating the list).</li>
+  </ol>
+<pre><code>kubectl describe pod nginx-deployment-7c8f5d-abcde
+...
+Events:
+  Warning  Failed  Failed to pull image "nginy:1.14.2": ... repository does not exist or may require authorization
+  Warning  Failed  Error: ErrImagePull
+  Normal   BackOff Back-off pulling image "nginy:1.14.2"
+  Warning  Failed  Error: ImagePullBackOff</code></pre>
+  <p>You can also list cluster events directly: <code>kubectl get events --sort-by=.lastTimestamp</code>.</p>
+  <div class="table-wrap"><table>
+    <tr><th>What the event says</th><th>Likely cause</th><th>Fix</th></tr>
+    <tr><td>repository does not exist / manifest unknown / not found</td><td>Wrong name or tag</td><td>Correct the image reference</td></tr>
+    <tr><td>pull access denied / unauthorized / authorization failed</td><td>Private image, missing or wrong credentials</td><td>Create <code>docker-registry</code> Secret, add <code>imagePullSecrets</code></td></tr>
+    <tr><td>i/o timeout / no such host / connection refused</td><td>Network, DNS or registry down</td><td>Fix routing, DNS, proxy; retry later</td></tr>
+  </table></div>
+
+  <div class="demo" id="demo-ipb">
+    <div class="demo-head">Try it: read the event, find the cause</div>
+    <div class="demo-body">
+      <p>Pick an event message from <code>kubectl describe pod</code>.</p>
+      <select id="ip-sel" aria-label="Event message">
+        <option value="0">Failed to pull image "nginy:1.14.2": repository does not exist or may require authorization</option>
+        <option value="1">Failed to pull image "myuser/app:v1": pull access denied, authorization failed</option>
+        <option value="2">Failed to pull image "nginx:1.14.2": dial tcp: lookup registry-1.docker.io: i/o timeout</option>
+        <option value="3">Failed to pull image "myapp:9.9.9": manifest unknown</option>
+      </select>
+      <div class="row"><button class="btn primary" id="ip-go">Diagnose</button></div>
+      <div class="output" id="ip-out">Choose a message and press <b>Diagnose</b>.</div>
+    </div>
+  </div>
+
+  <div class="callout interview"><span class="callout-title">Interview angle</span>"A Pod is in ImagePullBackOff. What do you do?" Run <code>kubectl describe pod</code> and read the Events. Then check three things: is the image name and tag right, is it a private registry that needs <code>imagePullSecrets</code>, and can the node reach the registry. Explain that "back-off" means Kubernetes retries with growing delays.</div>
+
+  <h2>Check yourself</h2>
+  <div class="quiz" data-answer="1">
+    <div class="q">What does the "BackOff" in ImagePullBackOff mean?</div>
+    <div class="opts"><button>The image is rolled back to the previous version</button><button>Kubernetes waits longer between each retry of the pull</button><button>The node backs up the image</button></div>
+    <div class="explain">After each failure the delay grows (up to about 5 minutes) before the next attempt.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">The event says "pull access denied" for an image that definitely exists. What is the likely fix?</div>
+    <div class="opts"><button>Create a docker-registry Secret and set imagePullSecrets in the Pod spec</button><button>Increase the replica count</button><button>Add a liveness probe</button></div>
+    <div class="explain">A private repository needs credentials. Store them in a Secret and reference it from the Pod.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">Where do you find the actual reason for the failed pull?</div>
+    <div class="opts"><button>kubectl logs of the Pod</button><button>kubectl get nodes</button><button>The Events section of kubectl describe pod</button></div>
+    <div class="explain">The container never started, so there are no logs. The kubelet's pull errors appear in Events.</div>
+  </div>
+
+  <section class="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li><code>ErrImagePull</code> is the first failure; <code>ImagePullBackOff</code> is the waiting state with growing retry delays.</li>
+      <li>Three causes: wrong image name or tag, private registry without credentials, network or registry problems.</li>
+      <li>Always start with <code>kubectl describe pod</code> and read the Events at the bottom.</li>
+      <li>Private images need a <code>docker-registry</code> Secret and <code>imagePullSecrets</code> in the same namespace.</li>
+      <li>The same approach works for ECR, ACR and others, only the server and credentials differ.</li>
+    </ul>
+  </section>
+</main>
+<script>
+(function () {
+  var D = [
+    { c: "Wrong image name", f: "The repository <code>nginy</code> does not exist. Fix the typo (<code>nginx</code>) and run <code>kubectl apply -f</code> again.", ok: false },
+    { c: "Private image, missing credentials", f: "Create a Secret with <code>kubectl create secret docker-registry</code>, then add <code>imagePullSecrets</code> to the Pod spec. Use the full <code>user/repo:tag</code> name.", ok: false },
+    { c: "Network or DNS problem", f: "The image name is fine. The node cannot resolve or reach the registry. Check DNS, NAT/internet route, proxy and firewall. Kubernetes keeps retrying, so it recovers once the network works.", ok: false },
+    { c: "Wrong or missing tag", f: "The repository exists but this tag does not. Check the tags in the registry and use one that exists (avoid relying on tags that get deleted).", ok: false }
+  ];
+  document.getElementById("ip-go").addEventListener("click", function () {
+    var d = D[+document.getElementById("ip-sel").value], o = document.getElementById("ip-out");
+    o.className = "output ok";
+    o.innerHTML = "<b>Cause: " + d.c + "</b><p style=\"margin:6px 0 0\">" + d.f + "</p>";
+  });
+})();
+</script>
+</body>
+</html>
