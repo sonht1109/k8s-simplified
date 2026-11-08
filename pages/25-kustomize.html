@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kustomize · Kubernetes Simplified</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/site.js"></script>
+<style>
+  .sim-box { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin: 10px 0; background: var(--surface-2); }
+  .sim-box select { width: 100%; margin-bottom: 6px; }
+  .sim-box label { display: flex; gap: 8px; align-items: flex-start; margin: 4px 0; }
+  #kz-out pre { margin: 0; white-space: pre-wrap; }
+  #kz-out .chg { background: var(--green); color: #fff; border-radius: 3px; padding: 0 3px; }
+</style>
+</head>
+<body data-page="25">
+<main class="wrap">
+  <header class="page-head">
+    <h1>Kustomize</h1>
+    <p class="lead">The same app usually runs in dev, staging and production with small differences: replica counts, image tags, names. Kustomize lets you keep one base YAML and describe only the differences, with no copying and no templates.</p>
+  </header>
+
+  <div class="xref-box"><div>Deployments and their <code>replicas</code> and <code>image</code> fields are explained in <a href="05-deployments-replicasets.html">Lesson 5</a>. Kustomize and <a href="27-helm.html">Helm (Lesson 27)</a> solve a similar problem in different ways.</div></div>
+
+  <h2>The problem</h2>
+  <p>You have an nginx Deployment. Dev needs 3 replicas, staging 4, production 5. With plain <code>kubectl apply</code> you would make folders <code>dev/</code>, <code>stage/</code>, <code>prod/</code>, each with a nearly identical copy of the file. Then six months later a security fix means updating the image in every copy. With 50 microservices and 3 environments that is 150 files to edit by hand, and one will be forgotten.</p>
+  <p><strong>Kustomize</strong> fixes this. It is built into <code>kubectl</code> (and also available as a standalone <code>kustomize</code> command) and is a <strong>template-free</strong> configuration tool: your YAML stays valid, ordinary Kubernetes YAML, and you layer changes on top.</p>
+  <div class="callout analogy"><span class="callout-title">Think of it like…</span>Ansible for servers lets you say "install nginx on all VMs, but a different version on one". Kustomize does the same for manifests: one shared definition, plus small per-environment tweaks.</div>
+
+  <h2>Bases and overlays</h2>
+  <ul>
+    <li>A <strong>base</strong> is the common, original set of manifests (Deployment, Service, ConfigMap...).</li>
+    <li>An <strong>overlay</strong> is a folder per environment that points at the base and says what to change.</li>
+  </ul>
+<pre><code>myapp/
+├── base/
+│   ├── deployment.yaml
+│   └── kustomization.yaml
+└── overlays/
+    ├── dev/
+    │   └── kustomization.yaml
+    └── stage/
+        └── kustomization.yaml</code></pre>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 680 220" role="img" aria-label="One base feeds two overlays, dev and stage, which produce different final manifests.">
+      <defs><marker id="arr25" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" style="fill:var(--text-2)"/></marker></defs>
+      <rect class="s-blue" x="10" y="75" width="150" height="70" rx="8"/>
+      <text class="s-text-b" x="85" y="105" text-anchor="middle">base</text>
+      <text class="s-text-s" x="85" y="125" text-anchor="middle">deployment.yaml</text>
+      <rect class="s-orange-soft" x="240" y="20" width="170" height="60" rx="8"/>
+      <text class="s-text-b" x="325" y="46" text-anchor="middle">overlays/dev</text>
+      <text class="s-text-s" x="325" y="65" text-anchor="middle">prefix dev-, 3 replicas</text>
+      <rect class="s-orange-soft" x="240" y="140" width="170" height="60" rx="8"/>
+      <text class="s-text-b" x="325" y="166" text-anchor="middle">overlays/stage</text>
+      <text class="s-text-s" x="325" y="185" text-anchor="middle">prefix stage-, 4 replicas</text>
+      <rect class="s-green" x="500" y="20" width="170" height="60" rx="8"/>
+      <text class="s-text-b" x="585" y="56" text-anchor="middle">dev manifests</text>
+      <rect class="s-green" x="500" y="140" width="170" height="60" rx="8"/>
+      <text class="s-text-b" x="585" y="176" text-anchor="middle">stage manifests</text>
+      <path class="s-line" d="M160 100 L238 55" marker-end="url(#arr25)"/>
+      <path class="s-line" d="M160 120 L238 170" marker-end="url(#arr25)"/>
+      <path class="s-line-o" d="M410 50 H498" marker-end="url(#arr25)"/>
+      <path class="s-line-o" d="M410 170 H498" marker-end="url(#arr25)"/>
+    </svg>
+    <figcaption>The base is never edited per environment; each overlay describes only its differences.</figcaption>
+  </figure>
+
+  <h2>Step by step</h2>
+  <p><strong>1. The base.</strong> <code>base/deployment.yaml</code> is a normal Deployment (name <code>nginx-deployment</code>, 1 replica, image <code>nginx:1.14.2</code>). Next to it, a <code>kustomization.yaml</code> lists which files belong to the base:</p>
+<pre><code># base/kustomization.yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- deployment.yaml</code></pre>
+  <p>Add a Service, ConfigMap or Ingress later by listing it under <code>resources</code>.</p>
+  <p><strong>2. An overlay.</strong> It points at the base and adds <em>transformers</em>, built-in instructions for common changes:</p>
+<pre><code># overlays/dev/kustomization.yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- ../../base
+namePrefix: dev-
+images:
+- name: nginx
+  newTag: latest</code></pre>
+  <p>The <code>resources</code> path can also be a Git URL, so a platform team can keep shared bases in one repository while app teams keep only overlays.</p>
+  <p><strong>3. Preview, then apply.</strong></p>
+<pre><code>kubectl kustomize overlays/dev          # print the final YAML, change nothing
+kubectl create namespace dev
+kubectl apply -k overlays/dev -n dev    # note: -k, not -f</code></pre>
+  <p>The Deployment is now called <code>dev-nginx-deployment</code> and uses <code>nginx:latest</code>, and <code>base/deployment.yaml</code> was never touched. This also solves a common team problem: two developers sharing a namespace each use a different prefix and no longer overwrite each other's Deployments.</p>
+
+  <h2>Common built-in transformers</h2>
+  <div class="table-wrap"><table>
+    <tr><th>Field</th><th>What it does</th></tr>
+    <tr><td><code>namePrefix</code> / <code>nameSuffix</code></td><td>Adds text to every resource name</td></tr>
+    <tr><td><code>namespace</code></td><td>Sets the namespace of all resources</td></tr>
+    <tr><td><code>images</code></td><td>Changes image name or tag</td></tr>
+    <tr><td><code>replicas</code></td><td>Sets replica count by resource name</td></tr>
+    <tr><td><code>commonLabels</code> / <code>commonAnnotations</code></td><td>Adds labels or annotations to everything</td></tr>
+  </table></div>
+  <p>The Kustomize documentation lists about a dozen. Check there before writing patches by hand.</p>
+
+  <h2>Patches: change anything</h2>
+  <p>What if no transformer fits, for example a field in a custom resource? Use <strong>patches</strong>. There are two styles; pick whichever you find more comfortable.</p>
+  <h3>Style 1: YAML (strategic merge) patch</h3>
+  <p>Write a small YAML file containing just enough of the resource to identify it, plus the field you change:</p>
+<pre><code># overlays/dev/replicas.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+spec:
+  replicas: 4</code></pre>
+<pre><code># overlays/dev/kustomization.yaml (add)
+patches:
+- path: replicas.yaml</code></pre>
+  <h3>Style 2: JSON patch</h3>
+  <p>Give an operation and a path. Because it does not say which resource, you add a <code>target</code>:</p>
+<pre><code># overlays/stage/replicas.yaml
+- op: replace
+  path: /spec/replicas
+  value: 5</code></pre>
+<pre><code># overlays/stage/kustomization.yaml (add)
+patches:
+- path: replicas.yaml
+  target:
+    group: apps
+    version: v1
+    kind: Deployment
+    name: nginx-deployment</code></pre>
+  <p>Both do the same thing. YAML patches are easier to read; JSON patches are handy for precise edits such as an item inside a list of containers.</p>
+
+  <h2>Generators</h2>
+  <p>Kustomize can also <em>create</em> ConfigMaps and Secrets from literals or files with <code>configMapGenerator</code> and <code>secretGenerator</code>. It appends a hash to the name, so changing the content triggers a rolling restart of Pods that use it. They are useful but less commonly used than patches and transformers.</p>
+
+  <h2>Kustomize vs Helm</h2>
+  <ul>
+    <li><strong>Kustomize:</strong> no templates, plain YAML plus overlays. Simple, built into kubectl. Good for per-environment tweaks.</li>
+    <li><strong>Helm:</strong> templates plus a values file, and also a package manager with releases and rollbacks. More powerful, more to learn. See <a href="27-helm.html">Lesson 27</a>.</li>
+  </ul>
+  <p>Many teams even combine them. Pick Kustomize when you want the simpler approach.</p>
+
+  <div class="demo" id="demo-kz">
+    <div class="demo-head">Try it: render an overlay</div>
+    <div class="demo-body">
+      <p>The base is fixed. Choose an overlay and which transformers it uses, and see the output of <code>kubectl kustomize</code>. Changed lines are highlighted.</p>
+      <div class="sim-box">
+        <select id="kz-env" aria-label="Overlay">
+          <option value="dev">overlays/dev</option>
+          <option value="stage">overlays/stage</option>
+          <option value="prod">overlays/prod</option>
+        </select>
+        <label><input type="checkbox" id="kz-prefix" checked> namePrefix (dev- / stage- / prod-)</label>
+        <label><input type="checkbox" id="kz-image" checked> images: tag (dev: latest, stage: 1.25, prod: 1.25.3)</label>
+        <label><input type="checkbox" id="kz-rep" checked> replicas (dev 3, stage 4, prod 5)</label>
+      </div>
+      <div class="output" id="kz-out"></div>
+    </div>
+  </div>
+
+  <h2>Check yourself</h2>
+  <div class="quiz" data-answer="1">
+    <div class="q">Which command applies an overlay folder?</div>
+    <div class="opts"><button><code>kubectl apply -f overlays/dev</code></button><button><code>kubectl apply -k overlays/dev</code></button><button><code>kubectl kustomize apply dev</code></button></div>
+    <div class="explain">Kustomize directories are applied with <code>-k</code>. <code>kubectl kustomize &lt;dir&gt;</code> only prints the result.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">A new nginx security fix needs one image tag change for all environments. With a shared base, where do you edit?</div>
+    <div class="opts"><button>Once, in the base (unless an overlay overrides the tag)</button><button>In every overlay folder</button><button>In the Kubernetes API server</button></div>
+    <div class="explain">Overlays inherit from the base, so a shared change goes in one place. Overlays that set their own <code>images</code> tag keep theirs.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">Why choose Kustomize over Helm for a simple setup?</div>
+    <div class="opts"><button>It supports Go templates</button><button>It manages releases and rollbacks</button><button>It is template-free: plain YAML with small overlays</button></div>
+    <div class="explain">Kustomize keeps manifests as normal YAML. Helm uses templates and adds package management.</div>
+  </div>
+
+  <section class="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li>Kustomize customizes plain YAML <strong>without templates</strong>, and is built into kubectl.</li>
+      <li>Put shared manifests in a <strong>base</strong> and per-environment changes in <strong>overlays</strong>.</li>
+      <li>Each folder needs a <code>kustomization.yaml</code>; overlays reference the base under <code>resources</code>.</li>
+      <li>Use built-in transformers (<code>namePrefix</code>, <code>images</code>, <code>replicas</code>) or <code>patches</code> (YAML or JSON style).</li>
+      <li>Preview with <code>kubectl kustomize</code>, deploy with <code>kubectl apply -k</code>.</li>
+    </ul>
+  </section>
+</main>
+<script>
+(function () {
+  var ENV = {
+    dev:   { prefix: "dev-",   tag: "latest", rep: 3 },
+    stage: { prefix: "stage-", tag: "1.25",   rep: 4 },
+    prod:  { prefix: "prod-",  tag: "1.25.3", rep: 5 }
+  };
+  var $ = function (id) { return document.getElementById(id); };
+  function line(txt, changed) { return changed ? '<span class="chg">' + txt + "</span>" : txt; }
+  function render() {
+    var e = ENV[$("kz-env").value];
+    var p = $("kz-prefix").checked, i = $("kz-image").checked, r = $("kz-rep").checked;
+    var out = $("kz-out");
+    out.className = "output ok";
+    out.innerHTML = "<pre>" +
+      "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: " + line((p ? e.prefix : "") + "nginx-deployment", p) + "\nspec:\n  replicas: " +
+      line(String(r ? e.rep : 1), r) + "\n  selector:\n    matchLabels:\n      app: nginx\n  template:\n    metadata:\n      labels:\n        app: nginx\n    spec:\n      containers:\n      - name: nginx\n        image: " +
+      line("nginx:" + (i ? e.tag : "1.14.2"), i) + "\n        ports:\n        - containerPort: 80</pre>";
+  }
+  ["kz-env", "kz-prefix", "kz-image", "kz-rep"].forEach(function (id) { $(id).addEventListener("change", render); });
+  render();
+})();
+</script>
+</body>
+</html>
