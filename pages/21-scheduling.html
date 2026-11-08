@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scheduling: Selectors, Affinity &amp; Taints · Kubernetes Simplified</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/site.js"></script>
+<style>
+  .sim-box { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin: 10px 0; background: var(--surface-2); }
+  .sim-box h4 { margin: 0 0 6px; font-size: 15px; }
+  .sim-box label { display: flex; gap: 8px; align-items: flex-start; margin: 4px 0; }
+  .sim-box select { width: 100%; margin-bottom: 6px; }
+  .trace { list-style: none; padding: 0; margin: 0; }
+  .trace li { margin: 3px 0; }
+  .trace .y { color: var(--green); font-weight: 700; }
+  .trace .n { color: var(--red); font-weight: 700; }
+</style>
+</head>
+<body data-page="21">
+<main class="wrap">
+  <header class="page-head">
+    <h1>Scheduling: Selectors, Affinity &amp; Taints</h1>
+    <p class="lead">By default Kubernetes picks any node with enough room for your Pod. Sometimes you need more control: "only on ARM nodes", "prefer SSD", "keep everything off this node during an upgrade". You will learn four tools for that and how to fix the Pending Pods they can cause.</p>
+  </header>
+
+  <div class="xref-box"><div>The scheduler is a control plane component, explained in <a href="02-architecture.html">Lesson 2: Architecture</a>. To practise on several nodes locally, see <a href="26-kind.html">Lesson 26: kind</a>.</div></div>
+
+  <h2>What the scheduler does</h2>
+  <p>When you create a Pod, the <strong>kube-scheduler</strong> looks at every node, throws out the ones that cannot run it, and picks the best of the rest. The tools in this lesson change that decision. They come in two directions:</p>
+  <div class="grid-2">
+    <div class="card"><h3>The Pod chooses nodes</h3><p><strong>nodeSelector</strong> and <strong>node affinity</strong>. "I want to run on nodes that look like this."</p></div>
+    <div class="card"><h3>The node chooses Pods</h3><p><strong>Taints</strong> and <strong>tolerations</strong>. "I refuse Pods unless they have special permission."</p></div>
+  </div>
+  <p>If you set these badly, no node qualifies and the Pod sits in <code>Pending</code> forever. That can mean downtime, so it is worth understanding properly.</p>
+
+  <h2>Step 1: labels on nodes</h2>
+  <p>Selectors and affinity match against <strong>labels</strong>, simple key/value tags. Nodes have labels too, and you add your own:</p>
+<pre><code>kubectl get nodes --show-labels
+kubectl label node worker-2 disktype=ssd
+kubectl label node worker-2 disktype-        # trailing dash removes the label</code></pre>
+
+  <h2>nodeSelector: the simple hard rule</h2>
+  <p>Put a <code>nodeSelector</code> in the Pod spec. The Pod may run <strong>only</strong> on nodes carrying every listed label.</p>
+<pre><code>apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      nodeSelector:
+        disktype: ssd
+      containers:
+      - name: nginx
+        image: nginx:1.25</code></pre>
+  <p>A real reason to use it: an app built only for ARM processors, or one that needs a node with fast disks or a GPU.</p>
+  <div class="callout warn"><span class="callout-title">Watch out</span>If no node has the label, the Pods stay <code>Pending</code>. Run <code>kubectl describe pod &lt;name&gt;</code> and read the Events at the bottom:
+<pre><code>Warning  FailedScheduling  default-scheduler
+0/4 nodes are available: 4 node(s) didn't match Pod's node affinity/selector.</code></pre>
+  Typos (a label on the node that says <code>arm</code> while the Pod asks for <code>arm-worker</code>) are the most common cause. Fix the label or the selector and the Pods start right away.</div>
+
+  <h2>Node affinity: hard or soft</h2>
+  <p><strong>Node affinity</strong> does what nodeSelector does, with more flexibility. It has two modes:</p>
+  <div class="table-wrap"><table>
+    <tr><th>Mode</th><th>Meaning</th><th>Acts like</th></tr>
+    <tr><td><code>requiredDuringSchedulingIgnoredDuringExecution</code></td><td>Schedule only if a node matches</td><td>nodeSelector (a hard rule)</td></tr>
+    <tr><td><code>preferredDuringSchedulingIgnoredDuringExecution</code></td><td>Try to match; if none, run anywhere</td><td>A wish (a soft rule)</td></tr>
+  </table></div>
+  <p>The long names read as: the rule is applied <em>during scheduling</em>, and <em>ignored during execution</em>, meaning a Pod already running is not moved if labels change later.</p>
+<pre><code>spec:
+  affinity:
+    nodeAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 80
+        preference:
+          matchExpressions:
+          - key: disktype
+            operator: In
+            values: ["ssd"]</code></pre>
+  <p>For a required rule the shape is slightly different:</p>
+<pre><code>      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: kubernetes.io/arch
+            operator: In
+            values: ["arm64"]</code></pre>
+  <p>You do not need to memorise this syntax. Copy it from the docs. What matters is the idea: <strong>required = must, preferred = nice to have</strong>. Operators like <code>In</code>, <code>NotIn</code>, <code>Exists</code> let you write richer rules than a plain label match.</p>
+  <div class="callout interview"><span class="callout-title">Interview angle</span>"nodeSelector vs node affinity?" Both attract Pods to labelled nodes. nodeSelector is only an exact, hard match. Affinity adds soft preferences and operators, so the scheduler has room to compromise.</div>
+
+  <h2>Taints: a node says "keep out"</h2>
+  <p>Everything so far is about what a Pod wants. A <strong>taint</strong> is the reverse: a mark on a <em>node</em> that repels Pods. The classic use is maintenance. Before upgrading a node you want no new Pods landing on it (see <a href="16-cluster-upgrade.html">Lesson 16</a>).</p>
+<pre><code>kubectl taint nodes worker-1 key1=value1:NoSchedule
+kubectl taint nodes worker-1 key1=value1:NoSchedule-   # remove it</code></pre>
+  <p>The format is <code>key=value:effect</code>. There are three effects:</p>
+  <ul>
+    <li><strong>NoSchedule</strong>: no new Pods are placed here. Pods already running stay.</li>
+    <li><strong>PreferNoSchedule</strong>: the scheduler avoids the node but may use it as a last resort. Good for a node that is struggling with CPU or memory problems.</li>
+    <li><strong>NoExecute</strong>: no new Pods <em>and</em> existing Pods without a matching toleration are evicted. Use with care; running work stops.</li>
+  </ul>
+  <p>You may have noticed your control plane node never runs your apps. That is a taint: <code>node-role.kubernetes.io/control-plane:NoSchedule</code>.</p>
+
+  <h2>Tolerations: a Pod gets an exception</h2>
+  <p>A <strong>toleration</strong> on a Pod says "I am allowed on nodes with this taint". Important or special Pods (monitoring agents, GPU jobs) use it.</p>
+<pre><code>spec:
+  tolerations:
+  - key: "key1"
+    operator: "Equal"
+    value: "value1"
+    effect: "NoSchedule"</code></pre>
+  <div class="callout warn"><span class="callout-title">Watch out</span>A toleration only <strong>permits</strong>; it does not <strong>attract</strong>. A tolerating Pod may land on the tainted node but may equally land elsewhere. To force a Pod onto a dedicated node, combine both: a taint plus toleration to keep others out, and a nodeSelector or affinity to pull the right Pod in.</div>
+  <div class="callout analogy"><span class="callout-title">Think of it like…</span>A taint is a "Staff only" sign on a door. A toleration is a staff badge. A nodeSelector is a note saying "meet me in room 5". The badge lets you in; it does not tell you which room to walk to.</div>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 680 230" role="img" aria-label="A Pod with a selector and toleration is checked against three nodes: one lacking the label, one tainted, and one that fits.">
+      <defs><marker id="arr21" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" style="fill:var(--text-2)"/></marker></defs>
+      <rect class="s-orange-soft" x="10" y="70" width="170" height="90" rx="8"/>
+      <text class="s-text-b" x="95" y="98" text-anchor="middle">Pod</text>
+      <text class="s-text-s" x="95" y="120" text-anchor="middle">nodeSelector: ssd</text>
+      <text class="s-text-s" x="95" y="140" text-anchor="middle">tolerates: none</text>
+      <rect class="s-red" x="290" y="10" width="190" height="60" rx="8"/>
+      <text class="s-text-b" x="385" y="36" text-anchor="middle">Node A</text>
+      <text class="s-text-s" x="385" y="55" text-anchor="middle">no ssd label: rejected</text>
+      <rect class="s-red" x="290" y="85" width="190" height="60" rx="8"/>
+      <text class="s-text-b" x="385" y="111" text-anchor="middle">Node B (ssd + taint)</text>
+      <text class="s-text-s" x="385" y="130" text-anchor="middle">untolerated taint: rejected</text>
+      <rect class="s-green" x="290" y="160" width="190" height="60" rx="8"/>
+      <text class="s-text-b" x="385" y="186" text-anchor="middle">Node C (ssd)</text>
+      <text class="s-text-s" x="385" y="205" text-anchor="middle">fits: scheduled here</text>
+      <path class="s-line" d="M180 105 L288 45" marker-end="url(#arr21)"/>
+      <path class="s-line" d="M180 115 L288 115" marker-end="url(#arr21)"/>
+      <path class="s-line-o" d="M180 125 L288 190" marker-end="url(#arr21)"/>
+    </svg>
+    <figcaption>The scheduler filters out nodes that fail the selector or carry an untolerated taint.</figcaption>
+  </figure>
+
+  <h2>Which one when?</h2>
+  <div class="table-wrap"><table>
+    <tr><th>Need</th><th>Use</th></tr>
+    <tr><td>Pod must run on a certain kind of node</td><td>nodeSelector or required affinity</td></tr>
+    <tr><td>Pod would like a certain node but can live without</td><td>Preferred affinity</td></tr>
+    <tr><td>Stop new Pods on a node (upgrade, backup)</td><td>Taint with NoSchedule (or <code>kubectl cordon</code>)</td></tr>
+    <tr><td>Node is unhealthy, avoid it if possible</td><td>Taint with PreferNoSchedule</td></tr>
+    <tr><td>Clear a node completely, right now</td><td>Taint with NoExecute</td></tr>
+    <tr><td>Special Pod must still run on a tainted node</td><td>Toleration</td></tr>
+  </table></div>
+
+  <div class="demo" id="demo-sched">
+    <div class="demo-head">Try it: scheduler simulator</div>
+    <div class="demo-body">
+      <p>A four-node cluster: the control plane (tainted), worker-1 (<code>disktype=ssd</code>), worker-2 (<code>arch=arm</code>) and worker-3 (<code>disktype=ssd</code>, tainted <code>dedicated=batch:NoSchedule</code>). Set up a Pod and see where it can go.</p>
+      <div class="sim-box">
+        <h4>Pod placement rule</h4>
+        <select id="sc-mode" aria-label="Rule type">
+          <option value="none">No rule</option>
+          <option value="sel">nodeSelector</option>
+          <option value="req">Node affinity: required</option>
+          <option value="pref">Node affinity: preferred</option>
+        </select>
+        <select id="sc-label" aria-label="Label to match">
+          <option value="disktype=ssd">disktype=ssd</option>
+          <option value="arch=arm">arch=arm</option>
+          <option value="gpu=true">gpu=true (no node has it)</option>
+        </select>
+        <label><input type="checkbox" id="sc-tol"> Toleration for <code>dedicated=batch:NoSchedule</code></label>
+      </div>
+      <div class="row"><button class="btn primary" id="sc-go">Schedule the Pod</button></div>
+      <div class="output" id="sc-out">Press <b>Schedule the Pod</b>.</div>
+    </div>
+  </div>
+
+  <h2>Check yourself</h2>
+  <div class="quiz" data-answer="1">
+    <div class="q">Your Pod has a nodeSelector for <code>gpu=true</code> but no node has that label. What happens?</div>
+    <div class="opts"><button>It runs on a random node</button><button>It stays Pending with a FailedScheduling event</button><button>It crashes with CrashLoopBackOff</button></div>
+    <div class="explain">nodeSelector is a hard rule. With no matching node the Pod waits in Pending, and <code>kubectl describe pod</code> shows why.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">A Pod has a toleration for a taint on node X. Where will it run?</div>
+    <div class="opts"><button>Always on node X</button><button>Never on node X</button><button>It is allowed on node X but may run elsewhere too</button></div>
+    <div class="explain">Tolerations permit; they do not attract. Add a nodeSelector or affinity to pin the Pod to the tainted node.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">Which taint effect also evicts Pods that are already running on the node?</div>
+    <div class="opts"><button>NoExecute</button><button>NoSchedule</button><button>PreferNoSchedule</button></div>
+    <div class="explain">NoExecute evicts running Pods that do not tolerate the taint. NoSchedule only affects new Pods.</div>
+  </div>
+
+  <section class="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li><strong>nodeSelector</strong> and <strong>node affinity</strong> let a Pod pick nodes by label; <strong>taints</strong> let a node repel Pods.</li>
+      <li>nodeSelector and <em>required</em> affinity are hard rules; <em>preferred</em> affinity is a soft wish.</li>
+      <li>Taint effects: <code>NoSchedule</code>, <code>PreferNoSchedule</code>, <code>NoExecute</code> (which also evicts).</li>
+      <li>A toleration permits a Pod onto a tainted node but does not pull it there.</li>
+      <li>Pending Pods? Run <code>kubectl describe pod</code> and read the <code>FailedScheduling</code> event.</li>
+    </ul>
+  </section>
+</main>
+<script>
+(function () {
+  var NODES = [
+    { name: "control-plane", labels: {}, taint: "node-role.kubernetes.io/control-plane:NoSchedule", tol: false },
+    { name: "worker-1", labels: { disktype: "ssd" }, taint: null },
+    { name: "worker-2", labels: { arch: "arm" }, taint: null },
+    { name: "worker-3", labels: { disktype: "ssd" }, taint: "dedicated=batch:NoSchedule", tol: true }
+  ];
+  var $ = function (id) { return document.getElementById(id); };
+  function line(ok, txt) { return '<li><span class="' + (ok ? "y" : "n") + '">' + (ok ? "✔" : "✘") + "</span> " + txt + "</li>"; }
+  $("sc-go").addEventListener("click", function () {
+    var mode = $("sc-mode").value, lab = $("sc-label").value.split("="), tol = $("sc-tol").checked;
+    var rows = [], feasible = [];
+    NODES.forEach(function (n) {
+      var matches = n.labels[lab[0]] === lab[1];
+      if (n.taint && !(n.tol && tol)) { rows.push(line(false, "<b>" + n.name + "</b>: untolerated taint <code>" + n.taint + "</code>")); return; }
+      if ((mode === "sel" || mode === "req") && !matches) { rows.push(line(false, "<b>" + n.name + "</b>: label " + lab.join("=") + " not found")); return; }
+      feasible.push({ n: n, score: (mode === "pref" && matches) ? 1 : 0 });
+      rows.push(line(true, "<b>" + n.name + "</b>: can run it" + (mode === "pref" && matches ? " (matches your preference)" : "")));
+    });
+    var out = $("sc-out");
+    if (!feasible.length) {
+      out.className = "output bad";
+      out.innerHTML = '<ul class="trace">' + rows.join("") + "</ul><p style=\"margin:8px 0 0\"><b>Pending.</b> Event: 0/4 nodes are available.</p>";
+      return;
+    }
+    var best = Math.max.apply(null, feasible.map(function (f) { return f.score; }));
+    var picks = feasible.filter(function (f) { return f.score === best; }).map(function (f) { return f.n.name; });
+    out.className = "output ok";
+    out.innerHTML = '<ul class="trace">' + rows.join("") + "</ul><p style=\"margin:8px 0 0\"><b>Scheduled on: " + picks.join(" or ") + ".</b></p>";
+  });
+})();
+</script>
+</body>
+</html>
