@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Interview Questions, Part 1 · Kubernetes Simplified</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/site.js"></script>
+<style>
+  .score-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .score-bar .big { font-size: 28px; font-weight: 700; }
+  .self { margin-top: 10px; display: flex; gap: 8px; align-items: center; font-size: 14px; }
+  details.qa > summary { font-weight: 600; }
+</style>
+</head>
+<body data-page="07">
+<main class="wrap">
+  <header class="page-head">
+    <h1>Interview Questions, Part 1</h1>
+    <p class="lead">Ten questions that come up in almost every beginner Kubernetes interview, from Docker vs Kubernetes to "what do you do day to day?". Try to answer each one out loud first, then open the answer and score yourself.</p>
+  </header>
+
+  <h2>How to use this page</h2>
+  <ol class="steps">
+    <li>Read the question and answer it <strong>out loud</strong> in 30 to 60 seconds. Hesitating for a long time sounds like you do not know the topic, so practise phrasing.</li>
+    <li>Open the answer and compare. Tick <em>I got it</em> if your answer covered the main points.</li>
+    <li>For any miss, follow the link to the lesson that explains the concept in full.</li>
+  </ol>
+
+  <div class="demo" id="demo-score">
+    <div class="demo-head">Your scorecard</div>
+    <div class="demo-body">
+      <div class="score-bar">
+        <span class="big" id="sc-num">0 / 10</span>
+        <span id="sc-msg">Open a question, answer it first, then tick the box.</span>
+      </div>
+      <div class="row"><button class="btn" id="sc-reset">Reset score</button></div>
+    </div>
+  </div>
+
+  <h2>The questions</h2>
+
+  <details class="qa"><summary>1. What is the difference between Docker and Kubernetes?</summary><div>
+    <p><strong>Docker is a container platform; Kubernetes is a container orchestration platform.</strong> Docker builds and runs containers on a single machine. Kubernetes runs containers across a <em>cluster</em> of machines and manages them for you.</p>
+    <ul>
+      <li><strong>Self-healing:</strong> containers are short-lived. Kubernetes replaces failed ones automatically.</li>
+      <li><strong>Scaling:</strong> add or remove replicas by hand or automatically.</li>
+      <li><strong>No single-host limit:</strong> if a node dies, Pods move to other nodes. With plain Docker, if the host dies, the app is down.</li>
+      <li><strong>Enterprise features:</strong> load balancing, and extensibility through custom resources and controllers (for example ingress controllers).</li>
+    </ul>
+    <p>Full story: <a href="01-intro-to-kubernetes.html">Lesson 1: Intro to Kubernetes</a>.</p>
+    <label class="self"><input type="checkbox" class="got"> I got it</label>
+  </div></details>
+
+  <details class="qa"><summary>2. What are the main components of Kubernetes architecture?</summary><div>
+    <p>Split it into the <strong>control plane</strong> (the brain) and the <strong>worker nodes</strong> (where apps run).</p>
+    <div class="grid-2">
+      <div class="card"><h3>Control plane</h3><ul><li><strong>API server:</strong> the front door; every request goes through it.</li><li><strong>etcd:</strong> the database where all cluster state is stored.</li><li><strong>Scheduler:</strong> decides which node runs each new Pod.</li><li><strong>Controller manager:</strong> runs the built-in controllers (ReplicaSet, Node, and so on).</li><li><strong>Cloud controller manager:</strong> talks to the cloud provider, for example to create a load balancer.</li></ul></div>
+      <div class="card"><h3>Worker node</h3><ul><li><strong>kubelet:</strong> manages Pods on the node.</li><li><strong>kube-proxy:</strong> programs network rules for Services.</li><li><strong>Container runtime:</strong> actually runs containers (containerd, CRI-O).</li></ul></div>
+    </div>
+    <div class="callout"><span class="callout-title">Follow-up you may get</span>"If Kubernetes does not ship Docker by default, does it not support Docker?" Kubernetes supports any runtime that implements the Container Runtime Interface (CRI). Container images built with Docker run fine on containerd or CRI-O. You just have to install a runtime on every node, because none is built in.</div>
+    <p>Details: <a href="02-architecture.html">Lesson 2: Architecture</a>.</p>
+    <label class="self"><input type="checkbox" class="got"> I got it</label>
+  </div></details>
+
+  <details class="qa"><summary>3. What is the difference between Docker Swarm and Kubernetes?</summary><div>
+    <p>Both orchestrate containers. The difference is scale and ecosystem.</p>
+    <ul>
+      <li><strong>Docker Swarm</strong> is very easy to install and use, but it is best for small or simple setups and has limited networking and extension options.</li>
+      <li><strong>Kubernetes</strong> suits mid-size and large organisations. It supports advanced networking (Calico, Flannel and others), has a very active community (CNCF), and can be extended with <em>custom resource definitions</em> and controllers when something is missing.</li>
+      <li><strong>Market reality:</strong> almost every DevOps job description asks for Kubernetes.</li>
+    </ul>
+    <p>See <a href="12-crds-custom-controllers.html">Lesson 12: CRDs &amp; Custom Controllers</a> for the extension model.</p>
+    <label class="self"><input type="checkbox" class="got"> I got it</label>
+  </div></details>
+
+  <details class="qa"><summary>4. What is the difference between a Docker container and a Kubernetes Pod?</summary><div>
+    <p>A <strong>container</strong> is one running process packaged with its dependencies. A <strong>Pod</strong> is the smallest deployable unit in Kubernetes: a wrapper that runs <em>one or more</em> containers, described in a YAML manifest.</p>
+    <ul>
+      <li>Containers in the same Pod share one network namespace (they talk over <code>localhost</code>) and can share storage volumes.</li>
+      <li>The Pod spec also carries things a bare container lacks: labels, resource requests, probes, restart policy.</li>
+    </ul>
+    <p>See <a href="04-pods.html">Lesson 4: Pods</a>, and <a href="05-deployments-replicasets.html">Lesson 5</a> for why you rarely create bare Pods in production.</p>
+    <label class="self"><input type="checkbox" class="got"> I got it</label>
+  </div></details>
+
+  <details class="qa"><summary>5. What is a namespace in Kubernetes?</summary><div>
+    <p>A <strong>namespace</strong> is a logical partition inside one cluster. Companies rarely build one cluster per team, so many teams share one cluster, and each team works in its own namespace.</p>
+    <ul>
+      <li>Names only need to be unique <em>within</em> a namespace, so two teams can both have a Deployment called <code>web</code>.</li>
+      <li>You can attach access rules (<a href="11-rbac.html">RBAC</a>), resource quotas and network policies per namespace, so one team cannot touch another team's resources.</li>
+      <li>It is logical isolation only: the Pods may still run on the same physical nodes.</li>
+    </ul>
+    <pre><code>kubectl create namespace team-a
+kubectl get pods -n team-a
+kubectl get pods --all-namespaces</code></pre>
+    <label class="self"><input type="checkbox" class="got"> I got it</label>
+  </div></details>
+
+  <details class="qa"><summary>6. What is the role of kube-proxy?</summary><div>
+    <p>kube-proxy runs on every node and <strong>implements Services</strong> at the network level. It watches the API server for Services and their endpoints and writes network rules on the node, by default with <code>iptables</code> (IPVS is another mode).</p>
+    <p>Example: you create a NodePort Service. kube-proxy adds rules so that traffic arriving at <code>&lt;node-ip&gt;:&lt;nodePort&gt;</code> is forwarded to one of the Pods behind the Service. The routing is done by the Linux kernel using those rules.</p>
+    <p>See <a href="06-services-intro.html">Lesson 6: Services</a>.</p>
+    <label class="self"><input type="checkbox" class="got"> I got it</label>
+  </div></details>
+
+  <details class="qa"><summary>7. What are the different types of Services? How do they differ?</summary><div>
+    <p>Three main types, each adding reach:</p>
+    <ul>
+      <li><strong>ClusterIP</strong> (default): a virtual IP reachable only inside the cluster.</li>
+      <li><strong>NodePort</strong>: also opens a port (30000-32767) on every node, so anyone who can reach the node IPs can use the app.</li>
+      <li><strong>LoadBalancer</strong>: also asks the cloud provider (via the cloud controller manager) for a public load balancer, so anyone on the internet can reach it.</li>
+    </ul>
+    <p>There are also <code>ExternalName</code> and headless Services. Hands-on: <a href="08-services-deep-dive.html">Lesson 8: Services Deep Dive</a>.</p>
+    <label class="self"><input type="checkbox" class="got"> I got it</label>
+  </div></details>
+
+  <details class="qa"><summary>8. What is the difference between NodePort and LoadBalancer?</summary><div>
+    <p>NodePort exposes the app on every <strong>node's IP</strong> and a high port. It works for people who can reach your nodes (your office network or VPC), but users must know a node IP and an odd port, and you must open that port range on the firewall.</p>
+    <p>LoadBalancer builds on NodePort and adds an <strong>external load balancer</strong> with its own public address, so users outside your organisation can reach the app. It needs a cloud provider (or a tool such as MetalLB on bare metal). On a laptop cluster the external IP stays <code>&lt;pending&gt;</code>.</p>
+    <p>One more reason to know the answer: LoadBalancer costs money per Service, which is why <a href="09-ingress-tls.html">Ingress</a> exists.</p>
+    <label class="self"><input type="checkbox" class="got"> I got it</label>
+  </div></details>
+
+  <details class="qa"><summary>9. What is the role of the kubelet?</summary><div>
+    <p>The kubelet is the agent on each worker node that <strong>manages the Pods on that node</strong>. The scheduler assigns a Pod to a node; the kubelet makes it real.</p>
+    <ul>
+      <li>It tells the container runtime to start the containers.</li>
+      <li>It runs health checks (probes) and restarts containers that fail.</li>
+      <li>It continuously reports Pod and node status to the API server. If a Pod is missing, controllers (like the ReplicaSet controller) see that and create a replacement, as explained in <a href="05-deployments-replicasets.html">Lesson 5</a>.</li>
+    </ul>
+    <label class="self"><input type="checkbox" class="got"> I got it</label>
+  </div></details>
+
+  <details class="qa"><summary>10. What are your day-to-day activities on Kubernetes?</summary><div>
+    <p>This is often the first question, so a calm, simple answer sets the tone. Cover these areas honestly, using what you really do or have practised:</p>
+    <ul>
+      <li><strong>Operate clusters:</strong> keep them healthy, set up monitoring and alerts.</li>
+      <li><strong>Deploy and release applications:</strong> manifests, Deployments, rollouts and rollbacks.</li>
+      <li><strong>Troubleshoot:</strong> help developers when Pods will not start or Services do not route traffic (<code>kubectl describe</code>, <code>logs</code>, events).</li>
+      <li><strong>Maintain:</strong> upgrade Kubernetes versions on nodes, patch packages, fix security vulnerabilities (see <a href="03-managing-clusters-kops.html">Lesson 3</a>).</li>
+      <li><strong>Support:</strong> answer tickets and teach teams how Kubernetes works.</li>
+    </ul>
+    <label class="self"><input type="checkbox" class="got"> I got it</label>
+  </div></details>
+
+  <div class="callout tip"><span class="callout-title">Tip</span>A good answer has three parts: a one-sentence definition, one or two key points, and a real example. For instance: "kube-proxy configures iptables rules on each node. For example, when I create a NodePort Service, it routes node-IP:port to the Pods."</div>
+
+  <h2>Check yourself</h2>
+  <div class="quiz" data-answer="1">
+    <div class="q">Which component decides <em>which node</em> a new Pod runs on?</div>
+    <div class="opts"><button>kubelet</button><button>Scheduler</button><button>kube-proxy</button></div>
+    <div class="explain">The scheduler picks the node. The kubelet on that node then starts the Pod.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">A teammate says "Kubernetes dropped Docker, so it cannot run Docker images." What is the right response?</div>
+    <div class="opts"><button>Correct, you must rebuild images for containerd</button><button>Correct, only Docker Swarm runs Docker images</button><button>Wrong, images are standard; Kubernetes just needs a CRI-compatible runtime such as containerd</button></div>
+    <div class="explain">Images follow an open standard. Any CRI runtime can run them.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">Which statement about namespaces is correct?</div>
+    <div class="opts"><button>They logically separate resources and access inside one cluster</button><button>Each namespace is a separate physical cluster</button><button>They make Pods use different container runtimes</button></div>
+    <div class="explain">Namespaces are logical isolation within a single cluster, combined with RBAC and quotas.</div>
+  </div>
+
+  <section class="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li>Docker runs containers on one host; Kubernetes orchestrates them across a cluster with self-healing, scaling and load balancing.</li>
+      <li>Control plane: API server, etcd, scheduler, controller manager, cloud controller manager. Worker: kubelet, kube-proxy, container runtime.</li>
+      <li>A Pod wraps one or more containers that share network and storage.</li>
+      <li>Namespaces give logical isolation; ClusterIP, NodePort and LoadBalancer give increasing reach.</li>
+      <li>Give short, structured answers: definition, key points, example.</li>
+    </ul>
+  </section>
+</main>
+<script>
+(function () {
+  var boxes = document.querySelectorAll(".got");
+  var num = document.getElementById("sc-num"), msg = document.getElementById("sc-msg");
+  function update() {
+    var n = 0;
+    for (var i = 0; i < boxes.length; i++) if (boxes[i].checked) n++;
+    num.textContent = n + " / " + boxes.length;
+    msg.textContent = n === 0 ? "Open a question, answer it first, then tick the box."
+      : n < 5 ? "Good start. Re-read the lessons linked in the answers you missed."
+      : n < 9 ? "Solid. Polish the phrasing of the ones you missed."
+      : "Interview ready for the basics.";
+  }
+  for (var i = 0; i < boxes.length; i++) boxes[i].addEventListener("change", update);
+  document.getElementById("sc-reset").addEventListener("click", function () {
+    for (var i = 0; i < boxes.length; i++) boxes[i].checked = false;
+    update();
+  });
+  update();
+})();
+</script>
+</body>
+</html>
